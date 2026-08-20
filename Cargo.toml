@@ -1,0 +1,53 @@
+[package]
+name = "geofront"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT"
+description = "Mecha tactical city defence and management"
+repository = "https://github.com/kvark/geofront"
+
+[dependencies]
+blade-engine = { git = "https://github.com/kvark/blade", rev = "2f1a1dec4899640b0240559a21d1a6b379babee8" }
+blade-graphics = { git = "https://github.com/kvark/blade", rev = "2f1a1dec4899640b0240559a21d1a6b379babee8" }
+blade-particle = { git = "https://github.com/kvark/blade", rev = "2f1a1dec4899640b0240559a21d1a6b379babee8" }
+blade-render = { git = "https://github.com/kvark/blade", rev = "2f1a1dec4899640b0240559a21d1a6b379babee8" }
+egui = "0.34"
+egui-winit = { version = "0.34", default-features = false, features = ["links"] }
+glam = { version = "0.30", features = ["mint"] }
+log = "0.4"
+mint = { version = "0.5", features = ["serde"] }
+ron = "0.8"
+serde = { version = "1", features = ["serde_derive"] }
+serde_json = "1"
+winit = "0.30"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger = "0.11"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+console_log = "1"
+getrandom = { version = "0.2", features = ["js"] }
+include_dir = "0.7"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "Window",
+] }
+web-time = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(gles)'] }
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unused_extern_crates = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+pattern_type_mismatch = "warn"
+new_without_default = "allow"
+needless_borrowed_reference = "allow"
