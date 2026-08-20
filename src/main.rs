@@ -8,6 +8,7 @@ mod ui;
 mod units;
 mod world;
 
+use combat::Mission;
 use log::info;
 
 fn main() {
@@ -23,7 +24,31 @@ fn main() {
 
     info!("Geofront starting");
 
-    // TODO: Blade engine + winit window setup (mirroring redline)
-    // For now, just a placeholder that compiles on both targets.
-    println!("Geofront scaffold ready. Implement engine loop next.");
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--smoke") {
+        run_smoke();
+        return;
+    }
+
+    // TODO: Blade engine + winit window setup (mirroring redline).
+    // For now the combat core is usable via --smoke and unit tests later.
+    println!("Geofront scaffold + combat MVP ready.");
+    println!("  cargo run -- --smoke     # headless short mission");
+    println!("Next: Blade engine loop + egui HUD.");
+}
+
+fn run_smoke() {
+    info!("Running combat smoke test");
+    let mut mission = Mission::new_skirmish();
+    mission.smoke_run(6);
+    for line in &mission.log {
+        println!("{line}");
+    }
+    if mission.is_won() {
+        info!("Smoke finished: WIN");
+    } else if mission.is_lost() {
+        info!("Smoke finished: LOSS");
+    } else {
+        info!("Smoke finished: ongoing (turn {})", mission.turn);
+    }
 }
