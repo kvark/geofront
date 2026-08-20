@@ -3,7 +3,6 @@
 use glam::IVec2;
 use crate::units::{LimbKind, Mech, Pilot, Team};
 
-/// Simple occupancy grid for the battlefield.
 #[derive(Debug)]
 pub struct Grid {
     pub width: i32,
@@ -37,7 +36,6 @@ pub enum Action {
     Wait { unit_id: u32 },
 }
 
-/// High-level turn-based combat state for a mission.
 #[derive(Debug)]
 pub struct Mission {
     pub grid: Grid,
@@ -45,7 +43,7 @@ pub struct Mission {
     pub pilots: Vec<Pilot>,
     pub phase: TurnPhase,
     pub turn: u32,
-    pub city_hp: f32, // simplified protection metric; damage lowers funding later
+    pub city_hp: f32,
     pub log: Vec<String>,
 }
 
@@ -114,8 +112,9 @@ impl Mission {
                 if dist > max_move.max(1) {
                     return Err(format!("Too far (max {max_move})"));
                 }
+                let name = mech.name.clone();
                 mech.position = to;
-                self.log.push(format!("{} moved to ({}, {})", mech.name, to.x, to.y));
+                self.log.push(format!("{name} moved to ({}, {})", to.x, to.y));
             }
             Action::Attack {
                 attacker_id,
@@ -143,11 +142,10 @@ impl Mission {
                 let destroyed = target.destroyed;
                 let tname = target.name.clone();
                 self.log.push(format!(
-                    "{name} attacked {tname} ({limb:?}) for {dmg:.0} dmg{}",
+                    "{name} attacked {tname} ({limb}) for {dmg:.0} dmg{}",
                     if destroyed { " — DESTROYED" } else { "" }
                 ));
-                if destroyed && target.team == Team::Enemy {
-                    // small city relief
+                if destroyed && matches!(target.team, Team::Enemy) {
                     self.city_hp = (self.city_hp + 2.0).min(100.0);
                 }
             }
@@ -160,7 +158,6 @@ impl Mission {
         Ok(())
     }
 
-    /// Very simple enemy AI: move closer or attack nearest player mech.
     pub fn run_enemy_turn(&mut self) {
         let player_positions: Vec<(u32, IVec2)> = self
             .living_mechs(Team::Player)
@@ -174,7 +171,6 @@ impl Mission {
         for eid in enemy_ids {
             let Some(enemy) = self.mech(eid) else { continue };
             let epos = enemy.position;
-            // Find nearest player
             let (tid, tpos) = player_positions
                 .iter()
                 .min_by_key(|(_, p)| Grid::manhattan(epos, *p))
@@ -188,7 +184,6 @@ impl Mission {
                     limb: LimbKind::Torso,
                 });
             } else {
-                // Step one tile toward target
                 let dx = (tpos.x - epos.x).signum();
                 let dy = (tpos.y - epos.y).signum();
                 let next = if dx != 0 {
@@ -209,23 +204,20 @@ impl Mission {
         self.run_enemy_turn();
         self.phase = TurnPhase::Player;
         self.turn += 1;
-        // enemies occasionally damage the city if still alive
         if self.living_mechs(Team::Enemy).count() > 0 {
             self.city_hp = (self.city_hp - 3.0).max(0.0);
             self.log.push(format!(
-                "City took collateral damage. Protection: {:.0}%", 
+                "City took collateral damage. Protection: {:.0}%",
                 self.city_hp
             ));
         }
     }
 
-    /// Run a few automatic turns for smoke testing.
     pub fn smoke_run(&mut self, max_turns: u32) {
         for _ in 0..max_turns {
             if self.is_won() || self.is_lost() {
                 break;
             }
-            // Player: simple aggressive AI for smoke
             let enemy_ids: Vec<u32> = self.living_mechs(Team::Enemy).map(|m| m.id).collect();
             let player_ids: Vec<u32> = self.living_mechs(Team::Player).map(|m| m.id).collect();
             for pid in player_ids {

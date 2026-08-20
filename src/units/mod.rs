@@ -11,6 +11,18 @@ pub enum LimbKind {
     RightLeg,
 }
 
+impl std::fmt::Display for LimbKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LimbKind::Torso => write!(f, "Torso"),
+            LimbKind::LeftArm => write!(f, "L.Arm"),
+            LimbKind::RightArm => write!(f, "R.Arm"),
+            LimbKind::LeftLeg => write!(f, "L.Leg"),
+            LimbKind::RightLeg => write!(f, "R.Leg"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Limb {
     pub kind: LimbKind,
@@ -102,7 +114,6 @@ impl Mech {
         if let Some(limb) = self.limb_mut(kind) {
             limb.hp = (limb.hp - amount).max(0.0);
         }
-        // Destroyed if torso is gone or all limbs gone.
         let torso_ok = self
             .limbs
             .iter()
@@ -131,14 +142,20 @@ impl Mech {
             .sum();
         (arms / 2.0).clamp(0.0, 1.0)
     }
+
+    pub fn total_hp(&self) -> (f32, f32) {
+        let cur: f32 = self.limbs.iter().map(|l| l.hp).sum();
+        let max: f32 = self.limbs.iter().map(|l| l.max_hp).sum();
+        (cur, max)
+    }
 }
 
 #[derive(Debug)]
 pub struct Pilot {
     pub id: u32,
     pub name: String,
-    pub sync: f32,    // 0.0..=1.0+ with current mech
-    pub loyalty: f32, // to commander / team
+    pub sync: f32,
+    pub loyalty: f32,
     pub stress: f32,
 }
 
@@ -153,7 +170,6 @@ impl Pilot {
         }
     }
 
-    /// Chance the pilot will refuse or half-heartedly follow a risky order.
     pub fn disobedience_chance(&self) -> f32 {
         let pressure = self.stress * (1.0 - self.loyalty) * (1.0 - self.sync);
         pressure.clamp(0.0, 0.6)
