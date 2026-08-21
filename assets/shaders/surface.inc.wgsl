@@ -1,22 +1,33 @@
 struct Surface {
-    albedo: vec3<f32>,
-    roughness: f32,
-    normal: vec3<f32>,
-    metallic: f32,
-    motion: vec2<f32>,
+    basis: vec4<f32>,
+    flat_normal: vec3<f32>,
     depth: f32,
+    // Direction towards the viewer, unit length.
+    // Only filled in by the passes that do shading.
+    view_dir: vec3<f32>,
+    // Material properties, only filled in by the passes that do shading.
+    // Note: matching the fields of `Material` in "brdf.inc.wgsl", which
+    // isn't available to all the users of this file.
+    diffuse_albedo: vec3<f32>,
+    specular_f0: vec3<f32>,
+    roughness: f32,
 }
 
-fn read_surface(gbuf: texture_2d<f32>, depth: texture_depth_2d, coords: vec2<i32>) -> Surface {
-    let g = textureLoad(gbuf, coords, 0);
-    let d = textureLoad(depth, coords, 0);
-    var s: Surface;
-    s.albedo = g.xyz;
-    s.roughness = g.w;
-    // normal/motion packed in other targets in full pipeline
-    s.normal = vec3(0.0, 1.0, 0.0);
-    s.metallic = 0.0;
-    s.motion = vec2(0.0);
-    s.depth = d;
-    return s;
+const SIGMA_N: f32 = 4.0;
+
+fn compare_flat_normals(a: vec3<f32>, b: vec3<f32>) -> f32 {
+    return pow(max(0.0, dot(a, b)), SIGMA_N);
+}
+
+fn compare_depths(a: f32, b: f32) -> f32 {
+    return 1.0 - smoothstep(0.0, 100.0, abs(a - b));
+}
+
+// Return the compatibility rating, where
+// 1.0 means fully compatible, and
+// 0.0 means totally incompatible.
+fn compare_surfaces(a: Surface, b: Surface) -> f32 {
+    let r_normal = compare_flat_normals(a.flat_normal, b.flat_normal);
+    let r_depth = compare_depths(a.depth, b.depth);
+    return r_normal * r_depth;
 }

@@ -22,7 +22,7 @@ Shaders (required for the windowed build):
 # or: cp -r ../redline/assets/shaders ./assets/shaders
 ```
 
-## Run
+## Run (native)
 
 ```bash
 cargo run --release
@@ -42,19 +42,15 @@ GEOFRONT_RT=1 cargo run --release
 
 ## Web / WASM
 
-Assets under `assets/` are embedded at compile time (`include_dir!` → Blade VFS), same as redline.
+The web build **is** the game: same Rust crate, compiled to `wasm32-unknown-unknown`. There is no Vite/React app.
 
 ```bash
 rustup target add wasm32-unknown-unknown
-cargo build --release --target wasm32-unknown-unknown
-mkdir -p dist/pkg
-wasm-bindgen --target web --no-typescript --out-dir dist/pkg \
-  target/wasm32-unknown-unknown/release/geofront.wasm
-cp web/index.html dist/
-# serve dist/ (e.g. python -m http.server -d dist)
+bash scripts/build-web.sh
+# serve dist/ (python -m http.server -d dist, or node scripts/serve.mjs dist)
 ```
 
-GitHub Pages workflow (`.github/workflows/pages.yml`) builds and deploys on push to `main`.
+GitHub Pages (`.github/workflows/pages.yml`) builds that WASM and deploys on push to `main`.
 
 ## Core pillars
 

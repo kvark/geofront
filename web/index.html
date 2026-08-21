@@ -2,8 +2,14 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Geofront — Mecha Tactical</title>
+    <meta name="description" content="Mecha tactical city defence. Two frames. One block. Hold the cavern." />
+    <meta name="theme-color" content="#0a0c10" />
+    <meta property="og:type" content="x:game" />
+    <meta property="og:title" content="Geofront" />
+    <meta property="og:image" content="./og.jpg" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <style>
       html,
       body {
@@ -11,6 +17,7 @@
         padding: 0;
         width: 100%;
         height: 100%;
+        height: 100dvh;
         overflow: hidden;
         background: #0a0c10;
         color: #c8d0dc;
@@ -20,33 +27,80 @@
         display: block;
         width: 100%;
         height: 100%;
+        touch-action: none;
       }
       #boot {
         position: absolute;
         inset: 0;
-        display: grid;
-        place-items: center;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1.2rem;
         pointer-events: none;
-        letter-spacing: 0.06em;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: #8b929c;
+      }
+      #boot .title { font-size: 1.05rem; }
+      #boot .bar {
+        width: min(220px, 56vw);
+        height: 3px;
+        background: #1c222c;
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      #boot .fill {
+        height: 100%;
+        width: 8%;
+        background: #c5ccd6;
+        border-radius: 2px;
+        animation: boot-pulse 1.1s ease-in-out infinite;
+      }
+      #boot .hint {
+        font-size: 0.7rem;
+        letter-spacing: 0.14em;
+        color: #5c6470;
+        text-transform: none;
+      }
+      @keyframes boot-pulse {
+        0% { width: 8%; opacity: 0.55; }
+        50% { width: 72%; opacity: 1; }
+        100% { width: 8%; opacity: 0.55; }
       }
     </style>
   </head>
   <body>
-    <div id="boot">Loading Geofront…</div>
+    <div id="boot">
+      <div class="title">Geofront</div>
+      <div class="bar"><div class="fill"></div></div>
+      <div class="hint">loading wasm</div>
+    </div>
     <script type="module">
-      import init from "./pkg/geofront.js";
+      import init, { start } from "./pkg/geofront.js";
       const boot = document.getElementById("boot");
+      const hint = boot && boot.querySelector(".hint");
+      const isControlFlow = (err) =>
+        String(err).includes("Using exceptions for control flow");
       try {
         await init();
+        if (hint) hint.textContent = "starting";
+        start();
         boot?.remove();
       } catch (err) {
-        if (boot) {
-          boot.textContent = String(err);
+        if (isControlFlow(err)) {
+          boot?.remove();
+        } else if (boot) {
+          boot.innerHTML = "";
+          const msg = document.createElement("div");
+          msg.style.cssText =
+            "max-width:80vw;padding:1.5rem;text-align:center;letter-spacing:0.04em;color:#c45c5c;text-transform:none;line-height:1.5;pointer-events:auto;white-space:pre-wrap";
+          msg.textContent = String(err);
+          boot.appendChild(msg);
           boot.style.pointerEvents = "auto";
-          boot.style.padding = "2rem";
-          boot.style.whiteSpace = "pre-wrap";
+        } else {
+          throw err;
         }
-        throw err;
       }
     </script>
   </body>

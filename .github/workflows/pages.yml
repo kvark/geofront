@@ -34,17 +34,7 @@ jobs:
           cargo install wasm-bindgen-cli --version "$VERSION" --locked
 
       - name: Build
-        run: cargo build --release --target wasm32-unknown-unknown
-
-      - name: Bindgen
-        run: |
-          mkdir -p dist/pkg
-          wasm-bindgen \
-            --target web \
-            --no-typescript \
-            --out-dir dist/pkg \
-            target/wasm32-unknown-unknown/release/geofront.wasm
-          cp web/index.html dist/index.html
+        run: bash scripts/build-web.sh
 
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -1,0 +1,9 @@
+{
+  "name": "geofront",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/serve.mjs dist",
+    "build": "bash scripts/build-web.sh",
+    "build:pages": "bash scripts/build-web.sh"
+  }
+}
