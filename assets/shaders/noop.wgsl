@@ -1,3 +1,3 @@
-@compute @workgroup_size(1)
-fn main() {
-}
+@compute
+@workgroup_size(1)
+fn noop() {}

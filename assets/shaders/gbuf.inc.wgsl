@@ -1,5 +1,2 @@
-#use DEBUG_MODE
-
-const MOTION_SCALE: f32 = 0.02;
-const USE_MOTION_VECTORS: bool = true;
-const WRITE_DEBUG_IMAGE: bool = DEBUG_MODE;
+const DEPTH_CLIP: f32 = 1.0;
+const DEPTH_BIAS: f32 = 1e-5;

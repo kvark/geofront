@@ -1,36 +1,49 @@
 struct CameraParams {
     position: vec3<f32>,
-    depth: f32,
+    depth_range: vec2<f32>,
     orientation: vec4<f32>,
     fov: vec2<f32>,
     target_size: vec2<u32>,
 }
 
-const VFLIP: vec2<f32> = vec2<f32>(1.0, -1.0);
-
-// Direction of the ray through a point on the film, in pixel units.
-fn get_ray_direction_at(cp: CameraParams, film_pos: vec2<f32>) -> vec3<f32> {
-    let half_size = 0.5 * vec2<f32>(cp.target_size);
-    let ndc = (film_pos - half_size) / half_size;
-    // Right-handed coordinate system with X=right, Y=up, and Z=towards the camera
-    let local_dir = vec3<f32>(VFLIP * ndc * tan(0.5 * cp.fov), -1.0);
-    return normalize(qrot(cp.orientation, local_dir));
+struct ScreenRay {
+    origin: vec3<f32>,
+    dir: vec3<f32>,
 }
 
-fn get_ray_direction(cp: CameraParams, pixel: vec2<i32>) -> vec3<f32> {
-    return get_ray_direction_at(cp, vec2<f32>(pixel) + vec2<f32>(0.5));
+fn get_ray(pixel: vec2<f32>, camera: CameraParams) -> ScreenRay {
+    let half_size = 0.5 * vec2<f32>(camera.target_size);
+    let ndc = (pixel - half_size) / half_size;
+    let cs_near = vec4<f32>(ndc * camera.fov, -1.0, 1.0);
+    // use inverse transform of the camera without projection matrix
+    let ws_near = qrot(camera.orientation, cs_near.xyz) + camera.position;
+    return ScreenRay(camera.position, normalize(ws_near - camera.position));
 }
 
-fn get_projected_pixel_float(cp: CameraParams, point: vec3<f32>) -> vec2<f32> {
-    let local_dir = qrot(qinv(cp.orientation), point - cp.position);
-    if local_dir.z >= 0.0 {
-        return vec2<f32>(-1.0);
-    }
-    let ndc = local_dir.xy / (-local_dir.z * tan(0.5 * cp.fov));
-    let half_size = 0.5 * vec2<f32>(cp.target_size);
-    return (VFLIP * ndc + vec2<f32>(1.0)) * half_size;
+fn get_projection_matrix(camera: CameraParams) -> mat4x4<f32> {
+    let m00 = 1.0 / camera.fov.x;
+    let m11 = 1.0 / camera.fov.y;
+    let m22 = camera.depth_range.y / (camera.depth_range.x - camera.depth_range.y);
+    let m23 = camera.depth_range.x * camera.depth_range.y / (camera.depth_range.x - camera.depth_range.y);
+    return mat4x4(
+        m00, 0.0, 0.0, 0.0,
+        0.0, m11, 0.0, 0.0,
+        0.0, 0.0, m22, -1.0,
+        0.0, 0.0, m23, 0.0,
+    );
 }
 
-fn get_projected_pixel(cp: CameraParams, point: vec3<f32>) -> vec2<i32> {
-    return vec2<i32>(get_projected_pixel_float(cp, point));
+fn get_view_matrix(camera: CameraParams) -> mat4x4<f32> {
+    let inv_orient = qinv(camera.orientation);
+    let basis = mat3x3(
+        qrot(inv_orient, vec3(1.0, 0.0, 0.0)),
+        qrot(inv_orient, vec3(0.0, 1.0, 0.0)),
+        qrot(inv_orient, vec3(0.0, 0.0, 1.0)),
+    );
+    return mat4x4(
+        vec4(basis[0], 0.0),
+        vec4(basis[1], 0.0),
+        vec4(basis[2], 0.0),
+        vec4(-camera.position * basis, 1.0),
+    );
 }
