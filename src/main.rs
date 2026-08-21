@@ -10,7 +10,7 @@ mod world;
 
 use combat::{Action, Mission};
 use log::info;
-use units::{LimbKind, Team};
+use units::LimbKind;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -66,6 +66,7 @@ struct App {
     mission: Option<Mission>,
     selected_player: u32,
     selected_enemy: u32,
+    selected_limb: LimbKind,
 }
 
 impl ApplicationHandler for App {
@@ -77,7 +78,7 @@ impl ApplicationHandler for App {
             .create_window(
                 Window::default_attributes()
                     .with_title("Geofront — Mecha Tactical")
-                    .with_inner_size(winit::dpi::LogicalSize::new(960.0, 640.0)),
+                    .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 720.0)),
             )
             .expect("window");
 
@@ -85,7 +86,6 @@ impl ApplicationHandler for App {
         {
             use winit::platform::web::WindowExtWebSys as _;
             let canvas = window.canvas().expect("winit canvas");
-            // Keep a stable id for any future Blade integration
             canvas.set_id("geofront-canvas");
             web_sys::window()
                 .and_then(|win| win.document())
@@ -108,8 +108,9 @@ impl ApplicationHandler for App {
         self.mission = Some(Mission::new_skirmish());
         self.selected_player = 0;
         self.selected_enemy = 10;
+        self.selected_limb = LimbKind::Torso;
 
-        info!("Window + egui ready (Blade 3D scene next)");
+        info!("Window ready. Interactive combat HUD active (Blade presentation next).");
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -130,7 +131,7 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                self.draw_ui(window);
+                self.draw_ui();
             }
             _ => {}
         }
@@ -144,7 +145,10 @@ impl ApplicationHandler for App {
 }
 
 impl App {
-    fn draw_ui(&mut self, window: &Window) {
+    fn draw_ui(&mut self) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
         let Some(egui_state) = self.egui_state.as_mut() else {
             return;
         };
@@ -153,79 +157,53 @@ impl App {
         };
 
         let raw_input = egui_state.take_egui_input(window);
+        let mut hud_action = None;
+
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                ui.heading("Geofront");
-                ui.label("Mecha tactical city defence — combat MVP (Blade 3D next)");
-                ui.separator();
-
-                ui.horizontal(|ui| {
-                    ui.label(format!("Turn {}", mission.turn));
-                    ui.label(format!("Phase: {:?}", mission.phase));
-                    ui.label(format!("City protection: {:.0}%", mission.city_hp));
-                    if mission.is_won() {
-                        ui.colored_label(egui::Color32::GREEN, "VICTORY");
-                    } else if mission.is_lost() {
-                        ui.colored_label(egui::Color32::RED, "DEFEAT");
-                    }
-                });
-
-                ui.separator();
-                ui.heading("Units");
-                for m in &mission.mechs {
-                    if m.destroyed {
-                        continue;
-                    }
-                    let (hp, max) = m.total_hp();
-                    let team = match m.team {
-                        Team::Player => "P",
-                        Team::Enemy => "E",
-                    };
-                    ui.label(format!(
-                        "[{team}] {} @ ({}, {})  HP {:.0}/{:.0}  mob {:.0}%  fire {:.0}%",
-                        m.name,
-                        m.position.x,
-                        m.position.y,
-                        hp,
-                        max,
-                        m.mobility() * 100.0,
-                        m.firepower() * 100.0
-                    ));
-                }
-
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui.button("End Turn").clicked() && !mission.is_won() && !mission.is_lost() {
-                        mission.end_player_turn();
-                    }
-                    if ui.button("Reset Mission").clicked() {
-                        *mission = Mission::new_skirmish();
-                    }
-                    if ui.button("Player attack torso").clicked() && !mission.is_won() && !mission.is_lost() {
-                        let _ = mission.apply_action(Action::Attack {
-                            attacker_id: self.selected_player,
-                            target_id: self.selected_enemy,
-                            limb: LimbKind::Torso,
-                        });
-                    }
-                });
-
-                ui.separator();
-                ui.heading("Combat log");
-                egui::ScrollArea::vertical()
-                    .max_height(200.0)
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        for line in mission.log.iter().rev().take(30).rev() {
-                            ui.label(line);
-                        }
-                    });
+                hud_action = ui::battle_hud(
+                    ui,
+                    mission,
+                    &mut self.selected_player,
+                    &mut self.selected_enemy,
+                    &mut self.selected_limb,
+                );
             });
         });
 
+        // Apply any requested action after the UI borrow ends.
+        if let Some(action) = hud_action {
+            match action {
+                ui::HudAction::Attack {
+                    attacker,
+                    target,
+                    limb,
+                } => {
+                    if let Err(e) = mission.apply_action(Action::Attack {
+                        attacker_id: attacker,
+                        target_id: target,
+                        limb,
+                    }) {
+                        mission.log.push(format!("Attack failed: {e}"));
+                    }
+                }
+                ui::HudAction::EndTurn => {
+                    mission.end_player_turn();
+                }
+                ui::HudAction::Reset => {
+                    *mission = Mission::new_skirmish();
+                    self.selected_player = 0;
+                    self.selected_enemy = 10;
+                    self.selected_limb = LimbKind::Torso;
+                }
+            }
+        }
+
         egui_state.handle_platform_output(window, full_output.platform_output);
-        // Note: without a full wgpu/Blade renderer we don't paint egui meshes yet.
-        // The window + input loop is live; next step is Blade Engine to present frames.
+
+        // TODO: tessellate + Blade Engine::render so the HUD actually appears.
+        // Until assets/shaders are present and Engine is wired, the window
+        // processes input but does not present egui meshes.
         let _ = full_output;
         window.request_redraw();
     }
