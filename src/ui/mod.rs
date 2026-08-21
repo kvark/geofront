@@ -1,12 +1,14 @@
-//! egui screens: base overview, battle HUD, dialogs, equip, research trees.
+//! egui screens: battle HUD, city overview controls, mode switching.
 
 use crate::combat::{Mission, TurnPhase};
+use crate::render::ViewMode;
 use crate::units::{LimbKind, Team};
 
-/// Draws the main combat HUD and returns any action the player requested.
-pub fn battle_hud(
+/// Draws the side-panel HUD and returns any action the player requested.
+pub fn side_hud(
     ui: &mut egui::Ui,
     mission: &Mission,
+    view_mode: ViewMode,
     selected_player: &mut u32,
     selected_enemy: &mut u32,
     selected_limb: &mut LimbKind,
@@ -14,8 +16,57 @@ pub fn battle_hud(
     let mut requested = None;
 
     ui.heading("Geofront");
-    ui.label("Mecha tactical city defence — combat MVP");
+    ui.label(match view_mode {
+        ViewMode::Battle => "Eva-style close-up combat",
+        ViewMode::CitySurface => "Surface city overview",
+        ViewMode::CityUnderground => "Underground facility overview",
+    });
     ui.separator();
+
+    // Mode switcher
+    ui.horizontal(|ui| {
+        ui.label("View:");
+        for mode in [
+            ViewMode::Battle,
+            ViewMode::CitySurface,
+            ViewMode::CityUnderground,
+        ] {
+            if ui
+                .selectable_label(view_mode == mode, mode.label())
+                .clicked()
+            {
+                requested = Some(HudAction::SetView(mode));
+            }
+        }
+    });
+    ui.separator();
+
+    match view_mode {
+        ViewMode::Battle => {
+            requested = requested.or(battle_panel(
+                ui,
+                mission,
+                selected_player,
+                selected_enemy,
+                selected_limb,
+            ));
+        }
+        ViewMode::CitySurface | ViewMode::CityUnderground => {
+            city_panel(ui, view_mode);
+        }
+    }
+
+    requested
+}
+
+fn battle_panel(
+    ui: &mut egui::Ui,
+    mission: &Mission,
+    selected_player: &mut u32,
+    selected_enemy: &mut u32,
+    selected_limb: &mut LimbKind,
+) -> Option<HudAction> {
+    let mut requested = None;
 
     ui.horizontal(|ui| {
         ui.label(format!("Turn {}", mission.turn));
@@ -29,7 +80,10 @@ pub fn battle_hud(
         } else {
             egui::Color32::RED
         };
-        ui.colored_label(city_color, format!("City protection: {:.0}%", mission.city_hp));
+        ui.colored_label(
+            city_color,
+            format!("City protection: {:.0}%", mission.city_hp),
+        );
 
         if mission.is_won() {
             ui.colored_label(egui::Color32::LIGHT_GREEN, "  VICTORY");
@@ -49,14 +103,8 @@ pub fn battle_hud(
                 format!("{} (destroyed)", m.name)
             } else {
                 format!(
-                    "{} @({},{})  {:.0}/{:.0}  m{:.0}% f{:.0}%",
-                    m.name,
-                    m.position.x,
-                    m.position.y,
-                    hp,
-                    max,
-                    m.mobility() * 100.0,
-                    m.firepower() * 100.0
+                    "{} @({},{})  {:.0}/{:.0}",
+                    m.name, m.position.x, m.position.y, hp, max
                 )
             };
             if cols[0].selectable_label(selected, label).clicked() && !m.destroyed {
@@ -152,7 +200,7 @@ pub fn battle_hud(
     ui.separator();
     ui.heading("Combat log");
     egui::ScrollArea::vertical()
-        .max_height(220.0)
+        .max_height(200.0)
         .stick_to_bottom(true)
         .show(ui, |ui| {
             for line in mission.log.iter().rev().take(40).rev() {
@@ -161,6 +209,22 @@ pub fn battle_hud(
         });
 
     requested
+}
+
+fn city_panel(ui: &mut egui::Ui, mode: ViewMode) {
+    ui.label(match mode {
+        ViewMode::CitySurface => {
+            "Kenney city block — commercial towers and industrial fringe.\n\
+             Switch to Battle for Eva-style close combat in the street canyon."
+        }
+        ViewMode::CityUnderground => {
+            "Space Kit facility — corridors, rooms, gates under the surface.\n\
+             This is the Geofront. Surface city sits above."
+        }
+        ViewMode::Battle => "",
+    });
+    ui.separator();
+    ui.label("Use the View buttons above to switch between surface city, underground facility, and the battle stage.");
 }
 
 #[derive(Debug, Clone)]
@@ -172,17 +236,5 @@ pub enum HudAction {
     },
     EndTurn,
     Reset,
-}
-
-/// Placeholder for future base / dialog screens.
-pub struct Ui {
-    pub selected_limb: LimbKind,
-}
-
-impl Ui {
-    pub fn new() -> Self {
-        Self {
-            selected_limb: LimbKind::Torso,
-        }
-    }
+    SetView(ViewMode),
 }
