@@ -1,6 +1,6 @@
 //! egui screens: base overview, battle HUD, dialogs, equip, research trees.
 
-use crate::combat::{Action, Mission, TurnPhase};
+use crate::combat::{Mission, TurnPhase};
 use crate::units::{LimbKind, Team};
 
 /// Draws the main combat HUD and returns any action the player requested.
@@ -17,7 +17,6 @@ pub fn battle_hud(
     ui.label("Mecha tactical city defence — combat MVP");
     ui.separator();
 
-    // Status bar
     ui.horizontal(|ui| {
         ui.label(format!("Turn {}", mission.turn));
         ui.separator();
@@ -41,7 +40,6 @@ pub fn battle_hud(
 
     ui.separator();
 
-    // Unit selection + status
     ui.columns(2, |cols| {
         cols[0].heading("Player");
         for m in mission.mechs.iter().filter(|m| m.team == Team::Player) {
@@ -107,7 +105,6 @@ pub fn battle_hud(
 
     ui.separator();
 
-    // Actions
     ui.horizontal(|ui| {
         ui.label("Target limb:");
         for limb in [

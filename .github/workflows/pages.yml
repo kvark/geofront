@@ -1,34 +1,60 @@
-name: Deploy WASM to GitHub Pages
+name: pages
 
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
+  build:
+    name: Build WASM
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - name: Install wasm-bindgen
-        run: cargo install wasm-bindgen-cli --version 0.2.100 || true
-      - name: Build
+
+      - name: Setup Rust
         run: |
-          cargo build --release --target wasm32-unknown-unknown
+          rustup toolchain install 1.92.0 --profile minimal --target wasm32-unknown-unknown
+          rustup default 1.92.0
+
+      - name: Install wasm-bindgen-cli
+        run: |
+          VERSION=$(awk '/name = "wasm-bindgen"/{getline; if ($1=="version") {gsub(/"/,"",$3); print $3; exit}}' Cargo.lock)
+          cargo install wasm-bindgen-cli --version "$VERSION" --locked
+
+      - name: Build
+        run: cargo build --release --target wasm32-unknown-unknown
+
+      - name: Bindgen
+        run: |
           mkdir -p dist/pkg
-          wasm-bindgen --target web --no-typescript --out-dir dist/pkg \
-            target/wasm32-unknown-unknown/release/geofront.wasm || true
-          cp web/index.html dist/ || true
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+          wasm-bindgen \
+            --target web \
+            --no-typescript \
+            --out-dir dist/pkg \
+            target/wasm32-unknown-unknown/release/geofront.wasm
+          cp web/index.html dist/index.html
+
+      - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
-      - name: Deploy to GitHub Pages
-        id: deployment
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
         uses: actions/deploy-pages@v4

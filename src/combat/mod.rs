@@ -141,11 +141,12 @@ impl Mission {
                 target.apply_damage(limb, dmg);
                 let destroyed = target.destroyed;
                 let tname = target.name.clone();
+                let was_enemy = matches!(target.team, Team::Enemy);
                 self.log.push(format!(
                     "{name} attacked {tname} ({limb}) for {dmg:.0} dmg{}",
                     if destroyed { " — DESTROYED" } else { "" }
                 ));
-                if destroyed && matches!(target.team, Team::Enemy) {
+                if destroyed && was_enemy {
                     self.city_hp = (self.city_hp + 2.0).min(100.0);
                 }
             }
