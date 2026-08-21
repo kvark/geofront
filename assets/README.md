@@ -15,5 +15,16 @@ Native loads from `assets/shaders/`. For WASM, embed the same tree via `include_
 
 ## models/
 
-Place Kenney CC0 (or custom) `.glb` files here.
-Recommended: City Kit (Industrial / Modular) for the city, Space Kit robots as temporary mechs.
+Kenney CC0 city + Space Kit pieces used by the battle / city views.
+
+Layout (each folder needs a sibling `Textures/colormap.png` because the GLBs reference `Textures/colormap.png`):
+
+```
+models/
+  roads/          # road-straight, road-crossing, road-crossroad, …
+  commercial/     # skyscrapers + mid-rise
+  industrial/     # chimneys, tanks, low buildings
+  space/          # underground corridors, rooms, gates
+```
+
+Copy from the curated set in the project’s `geofront-models/` / `geofront-push/assets/models/` if they are missing after a fresh clone.
