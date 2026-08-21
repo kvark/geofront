@@ -34,6 +34,7 @@ fn main() {
     {
         console_error_panic_hook::set_once();
         console_log::init_with_level(log::Level::Info).expect("logger");
+        mount_embedded_assets();
     }
 
     info!("Geofront starting");
@@ -44,16 +45,20 @@ fn main() {
         return;
     }
 
-    let shaders = assets_dir().join("shaders");
-    if !shaders.is_dir() {
-        eprintln!(
-            "Missing assets/shaders.\n\
-             Copy from redline (or blade examples):\n\
-               cp -r ../redline/assets/shaders ./assets/shaders\n\
-             Then re-run. The combat logic still works via:\n\
-               cargo run -- --smoke"
-        );
-        std::process::exit(1);
+    // On native, shaders must exist on disk. On WASM they are embedded into the VFS.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let shaders = assets_dir().join("shaders");
+        if !shaders.is_dir() {
+            eprintln!(
+                "Missing assets/shaders.\n\
+                 Run: ./scripts/fetch-shaders.sh\n\
+                 Or:  cp -r ../redline/assets/shaders ./assets/shaders\n\
+                 Smoke test still works without shaders:\n\
+                   cargo run -- --smoke"
+            );
+            std::process::exit(1);
+        }
     }
 
     let event_loop = EventLoop::new().expect("event loop");
@@ -79,6 +84,24 @@ fn run_smoke() {
 
 fn assets_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets")
+}
+
+/// Embed `assets/` into Blade's VFS so WASM can load shaders/models without a filesystem.
+#[cfg(target_arch = "wasm32")]
+fn mount_embedded_assets() {
+    use include_dir::{Dir, include_dir};
+    static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+    fn walk(dir: &Dir, root: &std::path::Path) {
+        for file in dir.files() {
+            blade_engine::vfs::mount(root.join(file.path()), file.contents().to_vec());
+        }
+        for child in dir.dirs() {
+            walk(child, root);
+        }
+    }
+    walk(&ASSETS, &root);
+    info!("Mounted embedded assets into VFS");
 }
 
 struct QuitEvent;
