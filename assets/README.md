@@ -1,29 +1,19 @@
 # Assets for Geofront
 
-Blade Engine expects:
+## shaders/
 
-- `shaders/` — **required** for the windowed build (raster shaders from blade-render / blade-engine)
-- `models/` — glTF/GLB mechs, city tiles, props (later)
-- optional environment maps, particles, etc.
+Vendored Blade WGSL shaders from redline (same `blade-engine` revision).
 
-## Quick start
+To re-sync from redline at any time:
 
-```sh
-# from the geofront root (adjust path to your redline checkout)
-cp -r ../redline/assets/shaders ./assets/shaders
+```bash
+chmod +x scripts/fetch-shaders.sh
+./scripts/fetch-shaders.sh
 ```
 
-After that:
+Native loads from `assets/shaders/`. For WASM, embed the same tree via `include_dir!` + VFS (as redline does).
 
-```sh
-cargo run --release
-```
+## models/
 
-You should see the dark clear + interactive combat HUD.
-
-The `--smoke` path does not need shaders or a GPU.
-
-## Later
-
-- Placeholder cubes or simple quads for the 8×8 grid and mechs can be added via `engine.add_object` once any GLB (even a unit cube) is present.
-- City tiles and animated mechs come after the combat feel is locked.
+Place Kenney CC0 (or custom) `.glb` files here.
+Recommended: City Kit (Industrial / Modular) for the city, Space Kit robots as temporary mechs.
