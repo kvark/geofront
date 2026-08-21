@@ -28,7 +28,9 @@ jobs:
 
       - name: Install wasm-bindgen-cli
         run: |
+          if [ ! -f Cargo.lock ]; then cargo generate-lockfile; fi
           VERSION=$(awk '/name = "wasm-bindgen"/{getline; if ($1=="version") {gsub(/"/,"",$3); print $3; exit}}' Cargo.lock)
+          echo "wasm-bindgen $VERSION"
           cargo install wasm-bindgen-cli --version "$VERSION" --locked
 
       - name: Build
