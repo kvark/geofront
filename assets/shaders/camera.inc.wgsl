@@ -6,20 +6,31 @@ struct CameraParams {
     target_size: vec2<u32>,
 }
 
-fn get_ray_direction(ndc: vec2<f32>, cam: CameraParams) -> vec3<f32> {
-    let basis = quaternion_to_matrix(cam.orientation);
-    let dir_cam = vec3<f32>(
-        ndc.x * cam.fov.x,
-        ndc.y * cam.fov.y,
-        -1.0,
-    );
-    return normalize(basis * dir_cam);
+const VFLIP: vec2<f32> = vec2<f32>(1.0, -1.0);
+
+// Direction of the ray through a point on the film, in pixel units.
+fn get_ray_direction_at(cp: CameraParams, film_pos: vec2<f32>) -> vec3<f32> {
+    let half_size = 0.5 * vec2<f32>(cp.target_size);
+    let ndc = (film_pos - half_size) / half_size;
+    // Right-handed coordinate system with X=right, Y=up, and Z=towards the camera
+    let local_dir = vec3<f32>(VFLIP * ndc * tan(0.5 * cp.fov), -1.0);
+    return normalize(qrot(cp.orientation, local_dir));
 }
 
-fn screen_to_ndc(pixel: vec2<f32>, target_size: vec2<u32>) -> vec2<f32> {
-    let size = vec2<f32>(target_size);
-    return vec2<f32>(
-        (pixel.x + 0.5) / size.x * 2.0 - 1.0,
-        1.0 - (pixel.y + 0.5) / size.y * 2.0,
-    );
+fn get_ray_direction(cp: CameraParams, pixel: vec2<i32>) -> vec3<f32> {
+    return get_ray_direction_at(cp, vec2<f32>(pixel) + vec2<f32>(0.5));
+}
+
+fn get_projected_pixel_float(cp: CameraParams, point: vec3<f32>) -> vec2<f32> {
+    let local_dir = qrot(qinv(cp.orientation), point - cp.position);
+    if local_dir.z >= 0.0 {
+        return vec2<f32>(-1.0);
+    }
+    let ndc = local_dir.xy / (-local_dir.z * tan(0.5 * cp.fov));
+    let half_size = 0.5 * vec2<f32>(cp.target_size);
+    return (VFLIP * ndc + vec2<f32>(1.0)) * half_size;
+}
+
+fn get_projected_pixel(cp: CameraParams, point: vec3<f32>) -> vec2<i32> {
+    return vec2<i32>(get_projected_pixel_float(cp, point));
 }
