@@ -3,10 +3,31 @@ struct RandomState {
     index: u32,
 }
 
-fn rot32(x: u32, k: u32) -> u32 {
-    return (x << k) | (x >> (32u - k));
+// 32 bit Jenkins hash
+fn hash_jenkins(value: u32) -> u32 {
+    var a = value;
+    // http://burtleburtle.net/bob/hash/integer.html
+    a = (a + 0x7ed55d16u) + (a << 12u);
+    a = (a ^ 0xc761c23cu) ^ (a >> 19u);
+    a = (a + 0x165667b1u) + (a << 5u);
+    a = (a + 0xd3a2646cu) ^ (a << 9u);
+    a = (a + 0xfd7046c5u) + (a << 3u);
+    a = (a ^ 0xb55a4f09u) ^ (a >> 16u);
+    return a;
 }
 
+fn random_init(pixel_index: u32, frame_index: u32) -> RandomState {
+    var rs: RandomState;
+    rs.seed = hash_jenkins(pixel_index) + frame_index;
+    rs.index = 0u;
+    return rs;
+}
+
+fn rot32(x: u32, bits: u32) -> u32 {
+    return (x << bits) | (x >> (32u - bits));
+}
+
+// https://en.wikipedia.org/wiki/MurmurHash
 fn murmur3(rng: ptr<function, RandomState>) -> u32 {
     let c1 = 0xcc9e2d51u;
     let c2 = 0x1b873593u;
