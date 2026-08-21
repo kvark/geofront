@@ -45,7 +45,6 @@ pub fn run() {
         return;
     }
 
-    // On native, shaders must exist on disk. On WASM they are embedded into the VFS.
     #[cfg(not(target_arch = "wasm32"))]
     {
         let shaders = assets_dir().join("shaders");
@@ -86,7 +85,6 @@ fn assets_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets")
 }
 
-/// Embed `assets/` into Blade's VFS so WASM can load shaders/models without a filesystem.
 #[cfg(target_arch = "wasm32")]
 fn mount_embedded_assets() {
     use include_dir::{Dir, include_dir};
@@ -112,9 +110,12 @@ struct Game {
     egui_state: egui_winit::State,
     egui_viewport_id: egui::ViewportId,
     mission: Mission,
+    arena: render::Arena,
+    view_mode: render::ViewMode,
     selected_player: u32,
     selected_enemy: u32,
     selected_limb: LimbKind,
+    impact_timer: f32,
     last_redraw: time::Instant,
 }
 
@@ -143,8 +144,16 @@ impl Game {
             let canvas = window.canvas().expect("winit canvas");
             canvas.set_id(blade_graphics::CANVAS_ID);
             if let Some(web_window) = web_sys::window() {
-                let width = web_window.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(1100.0) as u32;
-                let height = web_window.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(720.0) as u32;
+                let width = web_window
+                    .inner_width()
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(1100.0) as u32;
+                let height = web_window
+                    .inner_height()
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(720.0) as u32;
                 let width = width.max(1);
                 let height = height.max(1);
                 canvas.set_width(width);
@@ -203,15 +212,22 @@ impl Game {
         let egui_state =
             egui_winit::State::new(egui_context, egui_viewport_id, &window, None, None, None);
 
+        let mission = Mission::new_skirmish();
+        let view_mode = render::ViewMode::Battle;
+        let arena = render::Arena::spawn(&mut engine, view_mode, &mission);
+
         Self {
             engine,
             window,
             egui_state,
             egui_viewport_id,
-            mission: Mission::new_skirmish(),
+            mission,
+            arena,
+            view_mode,
             selected_player: 0,
             selected_enemy: 10,
             selected_limb: LimbKind::Torso,
+            impact_timer: 0.0,
             last_redraw: time::Instant::now(),
         }
     }
@@ -250,22 +266,39 @@ impl Game {
     }
 
     fn on_draw(&mut self) -> time::Duration {
-        self.last_redraw = time::Instant::now();
+        let now = time::Instant::now();
+        let dt = (now - self.last_redraw).as_secs_f32().min(0.05);
+        self.last_redraw = now;
+
+        self.engine.update(dt);
+
+        if self.impact_timer > 0.0 {
+            self.impact_timer = (self.impact_timer - dt).max(0.0);
+        }
+
+        self.arena.sync_mechs(&mut self.engine, &self.mission);
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let egui_context = self.egui_state.egui_ctx().clone();
 
         let mut hud_action = None;
         let egui_output = egui_context.run_ui(raw_input, |egui_ctx| {
-            egui::CentralPanel::default().show(egui_ctx, |ui| {
-                hud_action = ui::battle_hud(
-                    ui,
-                    &self.mission,
-                    &mut self.selected_player,
-                    &mut self.selected_enemy,
-                    &mut self.selected_limb,
-                );
-            });
+            egui::Panel::right("hud")
+                .default_size(360.0)
+                .frame(egui::Frame::side_top_panel(&egui_ctx.style()).inner_margin(10.0))
+                .show(egui_ctx, |ui| {
+                    hud_action = ui::side_hud(
+                        ui,
+                        &self.mission,
+                        self.view_mode,
+                        &mut self.selected_player,
+                        &mut self.selected_enemy,
+                        &mut self.selected_limb,
+                    );
+                });
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(egui_ctx, |_ui| {});
         });
 
         if let Some(action) = hud_action {
@@ -275,12 +308,17 @@ impl Game {
                     target,
                     limb,
                 } => {
-                    if let Err(e) = self.mission.apply_action(Action::Attack {
+                    match self.mission.apply_action(Action::Attack {
                         attacker_id: attacker,
                         target_id: target,
                         limb,
                     }) {
-                        self.mission.log.push(format!("Attack failed: {e}"));
+                        Ok(()) => {
+                            self.impact_timer = 1.15;
+                        }
+                        Err(e) => {
+                            self.mission.log.push(format!("Attack failed: {e}"));
+                        }
                     }
                 }
                 ui::HudAction::EndTurn => {
@@ -291,6 +329,16 @@ impl Game {
                     self.selected_player = 0;
                     self.selected_enemy = 10;
                     self.selected_limb = LimbKind::Torso;
+                    self.impact_timer = 0.0;
+                    self.arena.sync_mechs(&mut self.engine, &self.mission);
+                }
+                ui::HudAction::SetView(mode) => {
+                    if mode != self.view_mode {
+                        self.arena.clear(&mut self.engine);
+                        self.view_mode = mode;
+                        self.impact_timer = 0.0;
+                        self.arena = render::Arena::spawn(&mut self.engine, mode, &self.mission);
+                    }
                 }
             }
         }
@@ -303,7 +351,16 @@ impl Game {
             .egui_ctx()
             .tessellate(egui_output.shapes, egui_output.pixels_per_point);
 
-        let camera = render::Scene::combat_camera();
+        let camera = match self.view_mode {
+            render::ViewMode::Battle => render::combat_camera(
+                &self.mission,
+                self.selected_player,
+                self.selected_enemy,
+                self.impact_timer,
+            ),
+            other => render::city_camera(other),
+        };
+
         self.engine.render(
             &camera,
             &primitives,
