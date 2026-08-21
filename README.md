@@ -7,11 +7,21 @@ Evangelion-inspired hybrid of XCOM-style base management and *Into the Breach*-s
 ## Status
 
 - **Combat core** — turn-based mission, limb damage, mobility/firepower from limbs, simple enemy AI, city protection HP, win/lose.
-- **Interactive HUD** — unit selection, limb targeting, End Turn / Attack / Reset, live log.
-- **Dual target** — native + WASM/WebGL2 scaffolding (Blade).
-- **Next** — wire `blade_engine::Engine` so the HUD is presented (needs `assets/shaders`), then simple top-down grid visualisation.
+- **Interactive HUD** — unit selection, limb targeting, End Turn / Attack / Reset, live log (presented via Blade + egui).
+- **Blade Engine** — Rasterizer path, dark clear colour, top-down combat camera. Ready for grid/mech placeholders.
+- **Dual target** — native + WASM/WebGL2 scaffolding.
 
 See original design notes: https://github.com/kvark/ideas/blob/master/game/eva.md
+
+## Setup
+
+Blade needs the raster shaders. Easiest source is redline (or blade’s own examples):
+
+```sh
+mkdir -p assets
+cp -r ../redline/assets/shaders ./assets/shaders
+# optional later: models/, etc.
+```
 
 ## Run
 
@@ -19,13 +29,13 @@ See original design notes: https://github.com/kvark/ideas/blob/master/game/eva.m
 cargo run --release
 ```
 
-Headless combat smoke test:
+Headless combat smoke test (no GPU / shaders required):
 
 ```sh
 cargo run -- --smoke
 ```
 
-Optional ray-traced lighting later (once Engine is wired):
+Optional ray-traced lighting (needs RT hardware + RT shaders):
 
 ```sh
 GEOFRONT_RT=1 cargo run --release
@@ -40,6 +50,8 @@ wasm-bindgen --target web --no-typescript --out-dir dist/pkg \
     target/wasm32-unknown-unknown/release/geofront.wasm
 # then serve dist/ (see web/index.html)
 ```
+
+Assets are expected under `assets/`; for WASM they can later be embedded via `include_dir` the same way redline does.
 
 ## Core pillars
 

@@ -8,15 +8,22 @@ mod ui;
 mod units;
 mod world;
 
+use std::path::PathBuf;
+
 use combat::{Action, Mission};
 use log::info;
 use units::LimbKind;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
-    event_loop::{ActiveEventLoop, EventLoop},
-    window::{Window, WindowId},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    window::Window,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time;
+#[cfg(target_arch = "wasm32")]
+use web_time as time;
 
 fn main() {
     #[cfg(not(target_arch = "wasm32"))]
@@ -37,8 +44,20 @@ fn main() {
         return;
     }
 
+    let shaders = assets_dir().join("shaders");
+    if !shaders.is_dir() {
+        eprintln!(
+            "Missing assets/shaders.\n\
+             Copy from redline (or blade examples):\n\
+               cp -r ../redline/assets/shaders ./assets/shaders\n\
+             Then re-run. The combat logic still works via:\n\
+               cargo run -- --smoke"
+        );
+        std::process::exit(1);
+    }
+
     let event_loop = EventLoop::new().expect("event loop");
-    let mut app = App::default();
+    let mut app = App { game: None };
     event_loop.run_app(&mut app).expect("run");
 }
 
@@ -58,22 +77,34 @@ fn run_smoke() {
     }
 }
 
-#[derive(Default)]
-struct App {
-    window: Option<Window>,
-    egui_state: Option<egui_winit::State>,
-    egui_ctx: egui::Context,
-    mission: Option<Mission>,
+fn assets_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets")
+}
+
+struct QuitEvent;
+
+struct Game {
+    engine: blade_engine::Engine,
+    window: Window,
+    egui_state: egui_winit::State,
+    egui_viewport_id: egui::ViewportId,
+    mission: Mission,
     selected_player: u32,
     selected_enemy: u32,
     selected_limb: LimbKind,
+    last_redraw: time::Instant,
 }
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            return;
-        }
+impl Drop for Game {
+    fn drop(&mut self) {
+        self.engine.destroy();
+    }
+}
+
+impl Game {
+    fn new(event_loop: &ActiveEventLoop) -> Self {
+        info!("Initializing Geofront (Blade + combat)");
+
         let window = event_loop
             .create_window(
                 Window::default_attributes()
@@ -86,7 +117,7 @@ impl ApplicationHandler for App {
         {
             use winit::platform::web::WindowExtWebSys as _;
             let canvas = window.canvas().expect("winit canvas");
-            canvas.set_id("geofront-canvas");
+            canvas.set_id(blade_graphics::CANVAS_ID);
             web_sys::window()
                 .and_then(|win| win.document())
                 .and_then(|doc| doc.body())
@@ -94,76 +125,112 @@ impl ApplicationHandler for App {
                 .expect("couldn't append canvas");
         }
 
-        let egui_state = egui_winit::State::new(
-            self.egui_ctx.clone(),
-            egui::ViewportId::ROOT,
-            &window,
-            Some(window.scale_factor() as f32),
-            None,
-            None,
+        let assets = assets_dir();
+        let ray_trace = std::env::var_os("GEOFRONT_RT").is_some();
+
+        let mut engine = blade_engine::Engine::new(
+            blade_engine::Presentation::Window(&window),
+            &blade_engine::config::Engine {
+                shader_path: assets.join("shaders").to_string_lossy().into_owned(),
+                data_path: assets.to_string_lossy().into_owned(),
+                cache_path: "asset-cache".to_string(),
+                time_step: 0.01,
+                render_backend: if ray_trace {
+                    blade_engine::config::RenderBackend::RayTracer
+                } else {
+                    blade_engine::config::RenderBackend::Rasterizer
+                },
+                gui_enabled: true,
+            },
         );
 
-        self.window = Some(window);
-        self.egui_state = Some(egui_state);
-        self.mission = Some(Mission::new_skirmish());
-        self.selected_player = 0;
-        self.selected_enemy = 10;
-        self.selected_limb = LimbKind::Torso;
+        // Dark tactical clear colour; no scene objects yet.
+        engine.set_raster_config(blade_render::RasterConfig {
+            clear_color: blade_graphics::TextureColor::OpaqueBlack,
+            light_dir: mint::Vector3 {
+                x: 0.3,
+                y: 0.8,
+                z: 0.4,
+            },
+            light_color: mint::Vector3 {
+                x: 1.8,
+                y: 1.6,
+                z: 1.4,
+            },
+            ambient_color: mint::Vector3 {
+                x: 0.04,
+                y: 0.045,
+                z: 0.06,
+            },
+            space_sky: false,
+        });
 
-        info!("Window ready. Interactive combat HUD active (Blade presentation next).");
+        let egui_context = egui::Context::default();
+        let egui_viewport_id = egui_context.viewport_id();
+        let egui_state =
+            egui_winit::State::new(egui_context, egui_viewport_id, &window, None, None, None);
+
+        Self {
+            engine,
+            window,
+            egui_state,
+            egui_viewport_id,
+            mission: Mission::new_skirmish(),
+            selected_player: 0,
+            selected_enemy: 10,
+            selected_limb: LimbKind::Torso,
+            last_redraw: time::Instant::now(),
+        }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let Some(window) = self.window.as_ref() else {
-            return;
-        };
-        let Some(egui_state) = self.egui_state.as_mut() else {
-            return;
-        };
-
-        let response = egui_state.on_window_event(window, &event);
+    fn on_event(
+        &mut self,
+        event: &WindowEvent,
+    ) -> Result<ControlFlow, QuitEvent> {
+        let response = self.egui_state.on_window_event(&self.window, event);
         if response.repaint {
-            window.request_redraw();
+            self.window.request_redraw();
+        }
+        if response.consumed {
+            return Ok(ControlFlow::Poll);
         }
 
-        match event {
-            WindowEvent::CloseRequested => {
-                event_loop.exit();
+        match *event {
+            WindowEvent::CloseRequested => return Err(QuitEvent),
+            WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        physical_key: winit::keyboard::PhysicalKey::Code(key_code),
+                        state: winit::event::ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                if key_code == winit::keyboard::KeyCode::Escape {
+                    return Err(QuitEvent);
+                }
             }
             WindowEvent::RedrawRequested => {
-                self.draw_ui();
+                let delay = self.on_draw();
+                return Ok(ControlFlow::wait_duration(delay));
             }
             _ => {}
         }
+        Ok(ControlFlow::Poll)
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(window) = self.window.as_ref() {
-            window.request_redraw();
-        }
-    }
-}
+    fn on_draw(&mut self) -> time::Duration {
+        self.last_redraw = time::Instant::now();
 
-impl App {
-    fn draw_ui(&mut self) {
-        let Some(window) = self.window.as_ref() else {
-            return;
-        };
-        let Some(egui_state) = self.egui_state.as_mut() else {
-            return;
-        };
-        let Some(mission) = self.mission.as_mut() else {
-            return;
-        };
+        let raw_input = self.egui_state.take_egui_input(&self.window);
+        let egui_context = self.egui_state.egui_ctx().clone();
 
-        let raw_input = egui_state.take_egui_input(window);
         let mut hud_action = None;
-
-        let full_output = self.egui_ctx.run(raw_input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let egui_output = egui_context.run(raw_input, |egui_ctx| {
+            egui::CentralPanel::default().show(egui_ctx, |ui| {
                 hud_action = ui::battle_hud(
                     ui,
-                    mission,
+                    &self.mission,
                     &mut self.selected_player,
                     &mut self.selected_enemy,
                     &mut self.selected_limb,
@@ -171,7 +238,7 @@ impl App {
             });
         });
 
-        // Apply any requested action after the UI borrow ends.
+        // Apply HUD actions after the UI borrow.
         if let Some(action) = hud_action {
             match action {
                 ui::HudAction::Attack {
@@ -179,19 +246,19 @@ impl App {
                     target,
                     limb,
                 } => {
-                    if let Err(e) = mission.apply_action(Action::Attack {
+                    if let Err(e) = self.mission.apply_action(Action::Attack {
                         attacker_id: attacker,
                         target_id: target,
                         limb,
                     }) {
-                        mission.log.push(format!("Attack failed: {e}"));
+                        self.mission.log.push(format!("Attack failed: {e}"));
                     }
                 }
                 ui::HudAction::EndTurn => {
-                    mission.end_player_turn();
+                    self.mission.end_player_turn();
                 }
                 ui::HudAction::Reset => {
-                    *mission = Mission::new_skirmish();
+                    self.mission = Mission::new_skirmish();
                     self.selected_player = 0;
                     self.selected_enemy = 10;
                     self.selected_limb = LimbKind::Torso;
@@ -199,12 +266,56 @@ impl App {
             }
         }
 
-        egui_state.handle_platform_output(window, full_output.platform_output);
+        self.egui_state
+            .handle_platform_output(&self.window, egui_output.platform_output);
 
-        // TODO: tessellate + Blade Engine::render so the HUD actually appears.
-        // Until assets/shaders are present and Engine is wired, the window
-        // processes input but does not present egui meshes.
-        let _ = full_output;
-        window.request_redraw();
+        let primitives = self
+            .egui_state
+            .egui_ctx()
+            .tessellate(egui_output.shapes, egui_output.pixels_per_point);
+
+        let camera = render::Scene::combat_camera();
+        self.engine.render(
+            &camera,
+            &primitives,
+            &egui_output.textures_delta,
+            self.window.inner_size(),
+            self.window.scale_factor() as f32,
+        );
+
+        egui_output.viewport_output[&self.egui_viewport_id].repaint_delay
+    }
+}
+
+struct App {
+    game: Option<Game>,
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.game.is_none() {
+            self.game = Some(Game::new(event_loop));
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(game) = self.game.as_ref() {
+            game.window.request_redraw();
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        let Some(game) = self.game.as_mut() else {
+            return;
+        };
+        match game.on_event(&event) {
+            Ok(control_flow) => event_loop.set_control_flow(control_flow),
+            Err(QuitEvent) => event_loop.exit(),
+        }
     }
 }
