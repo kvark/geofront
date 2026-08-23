@@ -41,6 +41,9 @@ pub fn side_hud(
     });
     ui.separator();
 
+    ui.label("WASD move  ·  drag to look  ·  Q/E height  ·  Shift sprint  ·  wheel dolly");
+    ui.separator();
+
     match view_mode {
         ViewMode::Battle => {
             requested = requested.or(battle_panel(
@@ -224,7 +227,7 @@ fn city_panel(ui: &mut egui::Ui, mode: ViewMode) {
         ViewMode::Battle => "",
     });
     ui.separator();
-    ui.label("Use the View buttons above to switch between surface city, underground facility, and the battle stage.");
+    ui.label("Click the city, then WASD / drag. View buttons switch surface, underground, and battle.");
 }
 
 #[derive(Debug, Clone)]

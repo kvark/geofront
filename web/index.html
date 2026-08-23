@@ -25,9 +25,13 @@
       }
       canvas {
         display: block;
+        position: fixed;
+        inset: 0;
         width: 100%;
         height: 100%;
         touch-action: none;
+        outline: none;
+        cursor: grab;
       }
       #boot {
         position: absolute;
@@ -41,6 +45,7 @@
         letter-spacing: 0.18em;
         text-transform: uppercase;
         color: #8b929c;
+        z-index: 2;
       }
       #boot .title { font-size: 1.05rem; }
       #boot .bar {
@@ -76,8 +81,83 @@
       <div class="bar"><div class="fill"></div></div>
       <div class="hint">loading wasm</div>
     </div>
+    <script>
+      // Window-level input so the preview iframe actually receives WASD / drag.
+      window.__gfKeys = Object.create(null);
+      window.__gfPtr = { dx: 0, dy: 0, wheel: 0, down: false, x: 0, y: 0 };
+      window.__gfCam = { yaw: 0, pitch: 0, speed: 0, x: 0, y: 0, z: 0 };
+      const GAME_KEYS = new Set([
+        "KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE",
+        "ShiftLeft", "ShiftRight", "Space", "ControlLeft", "ControlRight",
+        "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+      ]);
+      window.addEventListener("keydown", (e) => {
+        window.__gfKeys[e.code] = true;
+        if (e.code === "ArrowUp") window.__gfKeys.KeyW = true;
+        if (e.code === "ArrowDown") window.__gfKeys.KeyS = true;
+        if (e.code === "ArrowLeft") window.__gfKeys.KeyA = true;
+        if (e.code === "ArrowRight") window.__gfKeys.KeyD = true;
+        if (GAME_KEYS.has(e.code)) e.preventDefault();
+      });
+      window.addEventListener("keyup", (e) => {
+        window.__gfKeys[e.code] = false;
+        if (e.code === "ArrowUp") window.__gfKeys.KeyW = false;
+        if (e.code === "ArrowDown") window.__gfKeys.KeyS = false;
+        if (e.code === "ArrowLeft") window.__gfKeys.KeyA = false;
+        if (e.code === "ArrowRight") window.__gfKeys.KeyD = false;
+      });
+      const clearKeys = () => { window.__gfKeys = Object.create(null); };
+      window.addEventListener("blur", clearKeys);
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) clearKeys();
+      });
+      function bindCanvas(c) {
+        if (c.dataset.gfBound) return;
+        c.dataset.gfBound = "1";
+        c.tabIndex = 0;
+        c.addEventListener("pointerdown", (e) => {
+          window.__gfPtr.down = true;
+          try { c.setPointerCapture(e.pointerId); } catch (_) {}
+          c.focus();
+          c.style.cursor = "grabbing";
+        });
+        const end = () => {
+          window.__gfPtr.down = false;
+          c.style.cursor = "grab";
+        };
+        c.addEventListener("pointerup", end);
+        c.addEventListener("pointercancel", end);
+        c.addEventListener("pointermove", (e) => {
+          window.__gfPtr.x = e.clientX;
+          window.__gfPtr.y = e.clientY;
+          if (!window.__gfPtr.down) return;
+          window.__gfPtr.dx += e.movementX;
+          window.__gfPtr.dy += e.movementY;
+        });
+        c.addEventListener("wheel", (e) => {
+          window.__gfPtr.wheel += e.deltaY;
+          e.preventDefault();
+        }, { passive: false });
+        c.addEventListener("contextmenu", (e) => e.preventDefault());
+      }
+      const obs = new MutationObserver(() => {
+        document.querySelectorAll("canvas").forEach(bindCanvas);
+      });
+      obs.observe(document.documentElement, { childList: true, subtree: true });
+      window.__controlsTest = {
+        getYaw: () => (window.__gfCam && window.__gfCam.yaw) || 0,
+        getSpeed: () => (window.__gfCam && window.__gfCam.speed) || 0,
+        getPos: () => window.__gfCam
+          ? { x: window.__gfCam.x, y: window.__gfCam.y, z: window.__gfCam.z }
+          : { x: 0, y: 0, z: 0 },
+        setKeys: (codes) => {
+          window.__gfKeys = Object.create(null);
+          for (const c of codes) window.__gfKeys[c] = true;
+        },
+      };
+    </script>
     <script type="module">
-      import init, { start } from "./pkg/geofront.js";
+      import init, { start } from "./pkg/geofront.js?v=fly2";
       const boot = document.getElementById("boot");
       const hint = boot && boot.querySelector(".hint");
       const isControlFlow = (err) =>
@@ -87,9 +167,17 @@
         if (hint) hint.textContent = "starting";
         start();
         boot?.remove();
+        document.querySelectorAll("canvas").forEach((c) => {
+          c.tabIndex = 0;
+          c.focus();
+        });
       } catch (err) {
         if (isControlFlow(err)) {
           boot?.remove();
+          document.querySelectorAll("canvas").forEach((c) => {
+            c.tabIndex = 0;
+            c.focus();
+          });
         } else if (boot) {
           boot.innerHTML = "";
           const msg = document.createElement("div");

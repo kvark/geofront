@@ -45,6 +45,7 @@ pub fn run() {
         return;
     }
 
+    // On native, shaders must exist on disk. On WASM they are embedded into the VFS.
     #[cfg(not(target_arch = "wasm32"))]
     {
         let shaders = assets_dir().join("shaders");
@@ -85,6 +86,7 @@ fn assets_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets")
 }
 
+/// Embed `assets/` into Blade's VFS so WASM can load shaders/models without a filesystem.
 #[cfg(target_arch = "wasm32")]
 fn mount_embedded_assets() {
     use include_dir::{Dir, include_dir};
@@ -115,7 +117,14 @@ struct Game {
     selected_player: u32,
     selected_enemy: u32,
     selected_limb: LimbKind,
+    /// Seconds remaining of impact framing after an attack.
     impact_timer: f32,
+    fly: render::FlyCam,
+    /// Held keys. look_dx/dy/wheel are per-frame and cleared after apply.
+    keys: render::MoveInput,
+    dragging: bool,
+    last_cursor: Option<(f32, f32)>,
+    hud_wants_pointer: bool,
     last_redraw: time::Instant,
 }
 
@@ -163,8 +172,16 @@ impl Game {
             web_sys::window()
                 .and_then(|win| win.document())
                 .and_then(|doc| doc.body())
-                .and_then(|body| body.append_child(&web_sys::Element::from(canvas)).ok())
+                .and_then(|body| body.append_child(&web_sys::Element::from(canvas.clone())).ok())
                 .expect("couldn't append canvas");
+            canvas.set_tab_index(0);
+            let _ = canvas.focus();
+            let style = canvas.style();
+            let _ = style.set_property("outline", "none");
+            let _ = style.set_property("touch-action", "none");
+            let _ = style.set_property("cursor", "grab");
+            let _ = style.set_property("width", "100%");
+            let _ = style.set_property("height", "100%");
         }
 
         let assets = assets_dir();
@@ -213,8 +230,9 @@ impl Game {
             egui_winit::State::new(egui_context, egui_viewport_id, &window, None, None, None);
 
         let mission = Mission::new_skirmish();
-        let view_mode = render::ViewMode::Battle;
+        let view_mode = render::ViewMode::CitySurface;
         let arena = render::Arena::spawn(&mut engine, view_mode, &mission);
+        let fly = render::FlyCam::for_mode(view_mode);
 
         Self {
             engine,
@@ -228,53 +246,190 @@ impl Game {
             selected_enemy: 10,
             selected_limb: LimbKind::Torso,
             impact_timer: 0.0,
+            fly,
+            keys: render::MoveInput::default(),
+            dragging: false,
+            last_cursor: None,
+            hud_wants_pointer: false,
             last_redraw: time::Instant::now(),
         }
     }
 
-    fn on_event(&mut self, event: &WindowEvent) -> Result<ControlFlow, QuitEvent> {
-        let response = self.egui_state.on_window_event(&self.window, event);
-        if response.repaint {
-            self.window.request_redraw();
+    fn apply_key(&mut self, key: winit::keyboard::KeyCode, down: bool) {
+        use winit::keyboard::KeyCode::*;
+        match key {
+            KeyW => self.keys.w = down,
+            KeyA => self.keys.a = down,
+            KeyS => self.keys.s = down,
+            KeyD => self.keys.d = down,
+            KeyQ => self.keys.q = down,
+            KeyE => self.keys.e = down,
+            ShiftLeft | ShiftRight => self.keys.shift = down,
+            _ => {}
         }
-        if response.consumed {
-            return Ok(ControlFlow::Poll);
-        }
+    }
 
-        match *event {
-            WindowEvent::CloseRequested => return Err(QuitEvent),
+    #[cfg(target_arch = "wasm32")]
+    fn sample_web_input(&mut self) {
+        use wasm_bindgen::JsValue;
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        if let Ok(keys) = js_sys::Reflect::get(&window, &JsValue::from_str("__gfKeys")) {
+            let down = |code: &str| {
+                js_sys::Reflect::get(&keys, &JsValue::from_str(code))
+                    .ok()
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            };
+            self.keys.w = down("KeyW");
+            self.keys.a = down("KeyA");
+            self.keys.s = down("KeyS");
+            self.keys.d = down("KeyD");
+            self.keys.q = down("KeyQ") || down("Space");
+            self.keys.e = down("KeyE") || down("ControlLeft") || down("ControlRight");
+            self.keys.shift = down("ShiftLeft") || down("ShiftRight");
+        }
+        if let Ok(ptr) = js_sys::Reflect::get(&window, &JsValue::from_str("__gfPtr")) {
+            let num = |name: &str| {
+                js_sys::Reflect::get(&ptr, &JsValue::from_str(name))
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as f32
+            };
+            let width = self.window.inner_size().width as f32;
+            let over_hud = num("x") > (width - 370.0).max(0.0);
+            if !over_hud {
+                self.keys.look_dx += num("dx");
+                self.keys.look_dy += num("dy");
+                self.keys.wheel += num("wheel");
+            }
+            let _ = js_sys::Reflect::set(&ptr, &JsValue::from_str("dx"), &JsValue::from_f64(0.0));
+            let _ = js_sys::Reflect::set(&ptr, &JsValue::from_str("dy"), &JsValue::from_f64(0.0));
+            let _ = js_sys::Reflect::set(&ptr, &JsValue::from_str("wheel"), &JsValue::from_f64(0.0));
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn publish_controls_probe(&self) {
+        use wasm_bindgen::JsValue;
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let cam = js_sys::Object::new();
+        let set = |obj: &js_sys::Object, k: &str, v: f64| {
+            let _ = js_sys::Reflect::set(obj, &JsValue::from_str(k), &JsValue::from_f64(v));
+        };
+        set(&cam, "yaw", self.fly.yaw as f64);
+        set(&cam, "pitch", self.fly.pitch as f64);
+        set(&cam, "speed", self.fly.speed as f64);
+        set(&cam, "x", self.fly.pos.x as f64);
+        set(&cam, "y", self.fly.pos.y as f64);
+        set(&cam, "z", self.fly.pos.z as f64);
+        let _ = js_sys::Reflect::set(&window, &JsValue::from_str("__gfCam"), &cam);
+    }
+
+    fn on_event(&mut self, event: &WindowEvent) -> Result<ControlFlow, QuitEvent> {
+        match event {
             WindowEvent::KeyboardInput {
                 event:
                     winit::event::KeyEvent {
                         physical_key: winit::keyboard::PhysicalKey::Code(key_code),
-                        state: winit::event::ElementState::Pressed,
+                        state,
+                        repeat: false,
                         ..
                     },
                 ..
             } => {
-                if key_code == winit::keyboard::KeyCode::Escape {
-                    return Err(QuitEvent);
+                let down = *state == winit::event::ElementState::Pressed;
+                self.apply_key(*key_code, down);
+                if down && *key_code == winit::keyboard::KeyCode::Escape {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        return Err(QuitEvent);
+                    }
                 }
             }
+            WindowEvent::MouseInput {
+                state,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                let width = self.window.inner_size().width as f32;
+                let over_hud = self
+                    .last_cursor
+                    .map(|(x, _)| x > width - 370.0)
+                    .unwrap_or(false);
+                self.dragging = *state == winit::event::ElementState::Pressed && !over_hud;
+                if !self.dragging {
+                    self.last_cursor = None;
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let pos = (position.x as f32, position.y as f32);
+                if self.dragging {
+                    if let Some((lx, ly)) = self.last_cursor {
+                        self.keys.look_dx += pos.0 - lx;
+                        self.keys.look_dy += pos.1 - ly;
+                    }
+                }
+                self.last_cursor = Some(pos);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let width = self.window.inner_size().width as f32;
+                let over_hud = self
+                    .last_cursor
+                    .map(|(x, _)| x > width - 370.0)
+                    .unwrap_or(false);
+                if !over_hud {
+                    self.keys.wheel += match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => y * 24.0,
+                        winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
+                    };
+                }
+            }
+            WindowEvent::Focused(false) => {
+                self.keys = render::MoveInput::default();
+                self.dragging = false;
+            }
+            _ => {}
+        }
+
+        let response = self.egui_state.on_window_event(&self.window, event);
+        if response.repaint {
+            self.window.request_redraw();
+        }
+
+        match *event {
+            WindowEvent::CloseRequested => return Err(QuitEvent),
             WindowEvent::RedrawRequested => {
-                let delay = self.on_draw();
-                return Ok(ControlFlow::wait_duration(delay));
+                self.on_draw();
+                return Ok(ControlFlow::Poll);
             }
             _ => {}
         }
         Ok(ControlFlow::Poll)
     }
 
-    fn on_draw(&mut self) -> time::Duration {
+    fn on_draw(&mut self) {
         let now = time::Instant::now();
         let dt = (now - self.last_redraw).as_secs_f32().min(0.05);
         self.last_redraw = now;
 
+        #[cfg(target_arch = "wasm32")]
+        self.sample_web_input();
+
+        // Asset cooking + physics step
         self.engine.update(dt);
 
         if self.impact_timer > 0.0 {
             self.impact_timer = (self.impact_timer - dt).max(0.0);
         }
+
+        self.fly.apply(dt, self.keys);
+        self.keys.look_dx = 0.0;
+        self.keys.look_dy = 0.0;
+        self.keys.wheel = 0.0;
 
         self.arena.sync_mechs(&mut self.engine, &self.mission);
 
@@ -283,6 +438,7 @@ impl Game {
 
         let mut hud_action = None;
         let egui_output = egui_context.run_ui(raw_input, |egui_ctx| {
+            // Right side-panel so the 3D stage stays visible
             egui::Panel::right("hud")
                 .default_size(360.0)
                 .frame(egui::Frame::side_top_panel(&egui_ctx.style()).inner_margin(10.0))
@@ -296,9 +452,6 @@ impl Game {
                         &mut self.selected_limb,
                     );
                 });
-            egui::CentralPanel::default()
-                .frame(egui::Frame::NONE)
-                .show(egui_ctx, |_ui| {});
         });
 
         if let Some(action) = hud_action {
@@ -314,6 +467,7 @@ impl Game {
                         limb,
                     }) {
                         Ok(()) => {
+                            // Dramatic impact framing for ~1.15s
                             self.impact_timer = 1.15;
                         }
                         Err(e) => {
@@ -330,6 +484,7 @@ impl Game {
                     self.selected_enemy = 10;
                     self.selected_limb = LimbKind::Torso;
                     self.impact_timer = 0.0;
+                    self.fly = render::FlyCam::for_mode(self.view_mode);
                     self.arena.sync_mechs(&mut self.engine, &self.mission);
                 }
                 ui::HudAction::SetView(mode) => {
@@ -338,6 +493,7 @@ impl Game {
                         self.view_mode = mode;
                         self.impact_timer = 0.0;
                         self.arena = render::Arena::spawn(&mut self.engine, mode, &self.mission);
+                        self.fly = render::FlyCam::for_mode(mode);
                     }
                 }
             }
@@ -351,14 +507,15 @@ impl Game {
             .egui_ctx()
             .tessellate(egui_output.shapes, egui_output.pixels_per_point);
 
-        let camera = match self.view_mode {
-            render::ViewMode::Battle => render::combat_camera(
+        let camera = if self.fly.piloted || self.view_mode != render::ViewMode::Battle {
+            self.fly.camera()
+        } else {
+            render::combat_camera(
                 &self.mission,
                 self.selected_player,
                 self.selected_enemy,
                 self.impact_timer,
-            ),
-            other => render::city_camera(other),
+            )
         };
 
         self.engine.render(
@@ -369,7 +526,10 @@ impl Game {
             self.window.scale_factor() as f32,
         );
 
-        egui_output.viewport_output[&self.egui_viewport_id].repaint_delay
+        self.hud_wants_pointer = self.egui_state.egui_ctx().wants_pointer_input();
+
+        #[cfg(target_arch = "wasm32")]
+        self.publish_controls_probe();
     }
 }
 

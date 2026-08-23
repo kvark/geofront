@@ -466,6 +466,128 @@ pub fn city_camera(mode: ViewMode) -> blade_engine::FrameCamera {
             let focus = Vec3::new(0.0, 1.5, 4.0);
             frame_camera(eye, focus, 0.78)
         }
-        ViewMode::Battle => frame_camera(Vec3::new(4.0, 12.0, 4.0), Vec3::new(7.0, 0.0, 7.0), 0.8),
+        ViewMode::Battle => FlyCam::for_mode(ViewMode::Battle).camera(),
+    }
+}
+
+/// Held WASD / look / wheel for one frame. Gameplay reads this, not raw events.
+#[derive(Clone, Copy, Default)]
+pub struct MoveInput {
+    pub w: bool,
+    pub a: bool,
+    pub s: bool,
+    pub d: bool,
+    pub q: bool,
+    pub e: bool,
+    pub shift: bool,
+    pub look_dx: f32,
+    pub look_dy: f32,
+    pub wheel: f32,
+}
+
+impl MoveInput {
+    pub fn has_look(self) -> bool {
+        self.look_dx != 0.0 || self.look_dy != 0.0
+    }
+
+    pub fn has_move(self) -> bool {
+        self.w || self.a || self.s || self.d || self.q || self.e || self.wheel != 0.0
+    }
+}
+
+/// FPS fly camera. Yaw 0 looks along −Z; +yaw is CCW about +Y.
+/// W/S along forward_xz, D/A along right_xz (A = screen-left, D = screen-right).
+pub struct FlyCam {
+    pub pos: Vec3,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub speed: f32,
+    pub piloted: bool,
+}
+
+impl FlyCam {
+    pub fn for_mode(mode: ViewMode) -> Self {
+        let (eye, focus) = match mode {
+            ViewMode::CitySurface => (Vec3::new(-6.0, 18.0, -4.0), Vec3::new(7.0, 2.0, 7.0)),
+            ViewMode::CityUnderground => (Vec3::new(-14.0, 12.0, -10.0), Vec3::new(0.0, 1.5, 4.0)),
+            ViewMode::Battle => (Vec3::new(-2.0, 3.4, 9.0), Vec3::new(7.0, 1.5, 7.0)),
+        };
+        let mut cam = Self::from_eye_focus(eye, focus);
+        cam.piloted = mode != ViewMode::Battle;
+        cam
+    }
+
+    pub fn from_eye_focus(eye: Vec3, focus: Vec3) -> Self {
+        let dir = (focus - eye).normalize_or_zero();
+        let pitch = dir.y.clamp(-0.99, 0.99).asin();
+        let yaw = (-dir.x).atan2(-dir.z);
+        Self {
+            pos: eye,
+            yaw,
+            pitch,
+            speed: 0.0,
+            piloted: false,
+        }
+    }
+
+    /// Ground-plane forward. yaw=0 → −Z.
+    pub fn forward_xz(&self) -> Vec3 {
+        Vec3::new(-self.yaw.sin(), 0.0, -self.yaw.cos())
+    }
+
+    /// Ground-plane right. yaw=0 → +X.
+    pub fn right_xz(&self) -> Vec3 {
+        Vec3::new(self.yaw.cos(), 0.0, -self.yaw.sin())
+    }
+
+    pub fn look_dir(&self) -> Vec3 {
+        let cp = self.pitch.cos();
+        Vec3::new(
+            -self.yaw.sin() * cp,
+            self.pitch.sin(),
+            -self.yaw.cos() * cp,
+        )
+    }
+
+    pub fn apply(&mut self, dt: f32, input: MoveInput) {
+        if input.has_look() || input.has_move() {
+            self.piloted = true;
+        }
+        self.yaw -= input.look_dx * 0.005;
+        self.pitch = (self.pitch - input.look_dy * 0.004).clamp(-1.2, 1.2);
+
+        let sprint = if input.shift { 2.4 } else { 1.0 };
+        let speed = 14.0 * sprint;
+        let f = self.forward_xz();
+        let r = self.right_xz();
+        let mut wish = Vec3::ZERO;
+        if input.w {
+            wish += f;
+        }
+        if input.s {
+            wish -= f;
+        }
+        if input.d {
+            wish += r;
+        }
+        if input.a {
+            wish -= r;
+        }
+        if input.q {
+            wish += Vec3::Y;
+        }
+        if input.e {
+            wish -= Vec3::Y;
+        }
+        if wish.length_squared() > 1e-6 {
+            wish = wish.normalize();
+        }
+        self.pos += wish * speed * dt;
+        self.pos += self.look_dir() * (-input.wheel * 0.025);
+        self.speed = wish.length() * speed;
+    }
+
+    pub fn camera(&self) -> blade_engine::FrameCamera {
+        frame_camera(self.pos, self.pos + self.look_dir(), 0.85)
     }
 }

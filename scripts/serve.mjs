@@ -45,7 +45,10 @@ const server = createServer((req, res) => {
     res.end("build the wasm game first: bash scripts/build-web.sh");
     return;
   }
-  res.writeHead(200, { "content-type": mime[extname(path)] ?? "application/octet-stream" });
+  res.writeHead(200, {
+    "content-type": mime[extname(path)] ?? "application/octet-stream",
+    "cache-control": "no-store",
+  });
   createReadStream(path).pipe(res);
 });
 

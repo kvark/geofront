@@ -1100,6 +1100,7 @@ dependencies = [
  "getrandom 0.2.17",
  "glam 0.30.10",
  "include_dir",
+ "js-sys",
  "log",
  "mint",
  "ron",
