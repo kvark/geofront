@@ -1,5 +1,5 @@
 //! Battle stage + city overview: Kenney surface / Space Kit underground,
-//! multi-part procedural mechs, Eva-style + impact cameras.
+//! Quaternius GLB mechs, Eva-style + impact cameras.
 
 use std::collections::HashMap;
 
@@ -288,32 +288,39 @@ fn spawn_underground_facility(engine: &mut blade_engine::Engine) -> Vec<blade_en
     handles
 }
 
-/// Multi-part procedural silhouette: legs + torso + head + arms (~2.8 u tall).
+/// Quaternius GLB mech (scale 0.4 ≈ 2.8 u tall on the Kenney grid).
+/// Clips Idle/Walk/Punch/Death/… are embedded; playback needs Blade skin support.
+const MECH_SCALE: f32 = 0.4;
+
+fn mech_glb_path(mech: &Mech) -> &'static str {
+    // Alternate models within each team so the field is not identical clones.
+    match (mech.team, mech.id % 2) {
+        (Team::Player, 0) => "models/mechs/Stan.glb",
+        (Team::Player, _) => "models/mechs/Mike.glb",
+        (Team::Enemy, 0) => "models/mechs/George.glb",
+        (Team::Enemy, _) => "models/mechs/Leela.glb",
+    }
+}
+
 fn spawn_mech_silhouette(
     engine: &mut blade_engine::Engine,
     mech: &Mech,
 ) -> blade_engine::ObjectHandle {
-    let color = match mech.team {
-        Team::Player => [0.50, 0.68, 0.95, 1.0],
-        Team::Enemy => [0.95, 0.38, 0.32, 1.0],
-    };
-    let model = engine.create_model(
-        &format!("mech-{}", mech.id),
-        vec![
-            box_geo("leg-l", color, [-0.28, 0.55, 0.0], [0.16, 0.55, 0.18]),
-            box_geo("leg-r", color, [0.28, 0.55, 0.0], [0.16, 0.55, 0.18]),
-            box_geo("torso", color, [0.0, 1.45, 0.0], [0.42, 0.55, 0.28]),
-            box_geo("head", color, [0.0, 2.25, 0.05], [0.22, 0.22, 0.22]),
-            box_geo("arm-l", color, [-0.58, 1.55, 0.0], [0.12, 0.42, 0.12]),
-            box_geo("arm-r", color, [0.58, 1.55, 0.0], [0.12, 0.42, 0.12]),
-            box_geo("pad-l", color, [-0.48, 1.85, 0.0], [0.18, 0.12, 0.18]),
-            box_geo("pad-r", color, [0.48, 1.85, 0.0], [0.18, 0.12, 0.18]),
-        ],
-    );
+    let path = mech_glb_path(mech);
     let pos = cell_to_world(mech.position);
-    engine.add_object_with_model(
-        &mech.name,
-        model,
+    engine.add_object(
+        &blade_engine::config::Object {
+            name: mech.name.clone(),
+            visuals: vec![blade_engine::config::Visual {
+                model: path.into(),
+                scale: MECH_SCALE,
+                pos: [0.0; 3].into(),
+                rot: [0.0; 3].into(),
+                front_face: blade_engine::config::FrontFace::default(),
+            }],
+            colliders: vec![],
+            additional_mass: None,
+        },
         blade_engine::Transform {
             position: pos.into(),
             orientation: quat_identity(),
