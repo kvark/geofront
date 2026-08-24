@@ -2,7 +2,7 @@
 
 use crate::combat::{Mission, TurnPhase};
 use crate::render::ViewMode;
-use crate::units::{LimbKind, Team};
+use crate::units::{Facing, LimbKind, Team};
 
 /// Draws the side-panel HUD and returns any action the player requested.
 pub fn side_hud(
@@ -23,7 +23,6 @@ pub fn side_hud(
     });
     ui.separator();
 
-    // Mode switcher
     ui.horizontal(|ui| {
         ui.label("View:");
         for mode in [
@@ -74,7 +73,11 @@ fn battle_panel(
     ui.horizontal(|ui| {
         ui.label(format!("Turn {}", mission.turn));
         ui.separator();
-        ui.label(format!("Phase: {:?}", mission.phase));
+        let phase_text = match mission.phase {
+            TurnPhase::Player => "Your phase",
+            TurnPhase::Enemy => "Enemy phase",
+        };
+        ui.label(phase_text);
         ui.separator();
         let city_color = if mission.city_hp > 60.0 {
             egui::Color32::GREEN
@@ -106,14 +109,31 @@ fn battle_panel(
                 format!("{} (destroyed)", m.name)
             } else {
                 format!(
-                    "{} @({},{})  {:.0}/{:.0}",
-                    m.name, m.position.x, m.position.y, hp, max
+                    "{} {}  ({},{})  {:.0}/{:.0}  MP{}",
+                    m.name,
+                    m.facing.label(),
+                    m.position.x,
+                    m.position.y,
+                    hp,
+                    max,
+                    m.move_left
                 )
             };
             if cols[0].selectable_label(selected, label).clicked() && !m.destroyed {
                 *selected_player = m.id;
             }
             if selected && !m.destroyed {
+                if let Some(pid) = m.pilot_id {
+                    if let Some(p) = mission.pilot(pid) {
+                        cols[0].label(format!(
+                            "Pilot {}  sync {:.0}%  loyalty {:.0}%  stress {:.0}%",
+                            p.name,
+                            p.sync * 100.0,
+                            p.loyalty * 100.0,
+                            p.stress * 100.0
+                        ));
+                    }
+                }
                 cols[0].indent("limbs", |ui| {
                     for limb in &m.limbs {
                         let ratio = limb.damage_ratio();
@@ -126,13 +146,18 @@ fn battle_panel(
                             } else {
                                 egui::Color32::RED
                             };
-                            ui.colored_label(
-                                color,
-                                format!("{:.0}/{:.0}", limb.hp, limb.max_hp),
-                            );
+                            ui.colored_label(color, format!("{:.0}/{:.0}", limb.hp, limb.max_hp));
                         });
                     }
                 });
+                let status = if m.acted {
+                    "acted"
+                } else if m.can_move() {
+                    "can move / attack"
+                } else {
+                    "can attack or wait"
+                };
+                cols[0].small(status);
             }
         }
 
@@ -144,8 +169,13 @@ fn battle_panel(
                 format!("{} (destroyed)", m.name)
             } else {
                 format!(
-                    "{} @({},{})  {:.0}/{:.0}",
-                    m.name, m.position.x, m.position.y, hp, max
+                    "{} {}  ({},{})  {:.0}/{:.0}",
+                    m.name,
+                    m.facing.label(),
+                    m.position.x,
+                    m.position.y,
+                    hp,
+                    max
                 )
             };
             if cols[1].selectable_label(selected, label).clicked() && !m.destroyed {
@@ -155,6 +185,36 @@ fn battle_panel(
     });
 
     ui.separator();
+
+    let can_act = matches!(mission.phase, TurnPhase::Player)
+        && !mission.is_won()
+        && !mission.is_lost();
+    let mech = mission.mech(*selected_player);
+    let can_move = can_act && mech.map(|m| m.can_move()).unwrap_or(false);
+    let can_fire = can_act && mech.map(|m| m.can_act()).unwrap_or(false);
+
+    ui.label("Step (1 tile) / face");
+    ui.horizontal(|ui| {
+        let mut pick = None;
+        let step = |ui: &mut egui::Ui, label: &str, dir: Facing, enabled: bool| {
+            ui.add_enabled(enabled, egui::Button::new(label)).clicked()
+                .then_some(HudAction::Step(dir))
+        };
+        pick = pick.or(step(ui, "N", Facing::North, can_move));
+        pick = pick.or(step(ui, "W", Facing::West, can_move));
+        pick = pick.or(step(ui, "E", Facing::East, can_move));
+        pick = pick.or(step(ui, "S", Facing::South, can_move));
+        ui.separator();
+        if ui.add_enabled(can_fire, egui::Button::new("↺")).clicked() {
+            pick = Some(HudAction::Rotate(-1));
+        }
+        if ui.add_enabled(can_fire, egui::Button::new("↻")).clicked() {
+            pick = Some(HudAction::Rotate(1));
+        }
+        if pick.is_some() {
+            requested = pick;
+        }
+    });
 
     ui.horizontal(|ui| {
         ui.label("Target limb:");
@@ -175,12 +235,8 @@ fn battle_panel(
     });
 
     ui.horizontal(|ui| {
-        let can_act = matches!(mission.phase, TurnPhase::Player)
-            && !mission.is_won()
-            && !mission.is_lost();
-
         if ui
-            .add_enabled(can_act, egui::Button::new("Attack selected"))
+            .add_enabled(can_fire, egui::Button::new("Attack"))
             .clicked()
         {
             requested = Some(HudAction::Attack {
@@ -188,6 +244,12 @@ fn battle_panel(
                 target: *selected_enemy,
                 limb: *selected_limb,
             });
+        }
+        if ui
+            .add_enabled(can_fire, egui::Button::new("Wait"))
+            .clicked()
+        {
+            requested = Some(HudAction::Wait);
         }
         if ui
             .add_enabled(can_act, egui::Button::new("End Turn"))
@@ -221,8 +283,8 @@ fn city_panel(ui: &mut egui::Ui, mode: ViewMode) {
              Switch to Battle for Eva-style close combat in the street canyon."
         }
         ViewMode::CityUnderground => {
-            "Space Kit facility — corridors, rooms, gates under the surface.\n\
-             This is the Geofront. Surface city sits above."
+            "Geofront hangar plus command, east/west wings, south airlock.\n\
+             Pieces abut on edges so floors no longer Z-fight."
         }
         ViewMode::Battle => "",
     });
@@ -237,6 +299,9 @@ pub enum HudAction {
         target: u32,
         limb: LimbKind,
     },
+    Step(Facing),
+    Rotate(i8),
+    Wait,
     EndTurn,
     Reset,
     SetView(ViewMode),

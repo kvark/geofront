@@ -110,7 +110,6 @@ struct Game {
     engine: blade_engine::Engine,
     window: Window,
     egui_state: egui_winit::State,
-    egui_viewport_id: egui::ViewportId,
     mission: Mission,
     arena: render::Arena,
     view_mode: render::ViewMode,
@@ -119,12 +118,13 @@ struct Game {
     selected_limb: LimbKind,
     /// Seconds remaining of impact framing after an attack.
     impact_timer: f32,
+    /// Delay between queued enemy actions.
+    enemy_step_timer: f32,
     fly: render::FlyCam,
     /// Held keys. look_dx/dy/wheel are per-frame and cleared after apply.
     keys: render::MoveInput,
     dragging: bool,
     last_cursor: Option<(f32, f32)>,
-    hud_wants_pointer: bool,
     last_redraw: time::Instant,
 }
 
@@ -211,23 +211,22 @@ impl Game {
                 z: 0.4,
             },
             light_color: mint::Vector3 {
-                x: 1.8,
-                y: 1.6,
-                z: 1.4,
+                x: 2.2,
+                y: 2.0,
+                z: 1.7,
             },
             ambient_color: mint::Vector3 {
-                x: 0.04,
-                y: 0.045,
-                z: 0.06,
+                x: 0.09,
+                y: 0.10,
+                z: 0.12,
             },
             space_sky: false,
         });
 
         let egui_context = egui::Context::default();
         egui_context.set_visuals(egui::Visuals::dark());
-        let egui_viewport_id = egui_context.viewport_id();
         let egui_state =
-            egui_winit::State::new(egui_context, egui_viewport_id, &window, None, None, None);
+            egui_winit::State::new(egui_context, egui::ViewportId::ROOT, &window, None, None, None);
 
         let mission = Mission::new_skirmish();
         let view_mode = render::ViewMode::CitySurface;
@@ -238,7 +237,6 @@ impl Game {
             engine,
             window,
             egui_state,
-            egui_viewport_id,
             mission,
             arena,
             view_mode,
@@ -246,11 +244,11 @@ impl Game {
             selected_enemy: 10,
             selected_limb: LimbKind::Torso,
             impact_timer: 0.0,
+            enemy_step_timer: 0.0,
             fly,
             keys: render::MoveInput::default(),
             dragging: false,
             last_cursor: None,
-            hud_wants_pointer: false,
             last_redraw: time::Instant::now(),
         }
     }
@@ -307,6 +305,26 @@ impl Game {
             let _ = js_sys::Reflect::set(&ptr, &JsValue::from_str("dx"), &JsValue::from_f64(0.0));
             let _ = js_sys::Reflect::set(&ptr, &JsValue::from_str("dy"), &JsValue::from_f64(0.0));
             let _ = js_sys::Reflect::set(&ptr, &JsValue::from_str("wheel"), &JsValue::from_f64(0.0));
+        }
+        if let Ok(view) = js_sys::Reflect::get(&window, &JsValue::from_str("__gfView")) {
+            if let Some(s) = view.as_string() {
+                let mode = match s.as_str() {
+                    "battle" => Some(render::ViewMode::Battle),
+                    "surface" => Some(render::ViewMode::CitySurface),
+                    "underground" => Some(render::ViewMode::CityUnderground),
+                    _ => None,
+                };
+                if mode.is_some() {
+                    let _ = js_sys::Reflect::set(
+                        &window,
+                        &JsValue::from_str("__gfView"),
+                        &JsValue::from_str(""),
+                    );
+                }
+                if let Some(mode) = mode {
+                    self.handle_hud(ui::HudAction::SetView(mode));
+                }
+            }
         }
     }
 
@@ -426,77 +444,79 @@ impl Game {
             self.impact_timer = (self.impact_timer - dt).max(0.0);
         }
 
+        // Play enemy actions one-by-one so walks/punches read as a turn.
+        if self.view_mode == render::ViewMode::Battle
+            && self.mission.phase == combat::TurnPhase::Enemy
+        {
+            self.enemy_step_timer -= dt;
+            if self.enemy_step_timer <= 0.0 {
+                match self.mission.step_enemy_queue() {
+                    Some(Action::Attack {
+                        attacker_id,
+                        target_id,
+                        ..
+                    }) => {
+                        let from = self
+                            .mission
+                            .mech(attacker_id)
+                            .map(|m| render::cell_to_world(m.position))
+                            .unwrap_or(glam::Vec3::ZERO);
+                        let to = self
+                            .mission
+                            .mech(target_id)
+                            .map(|m| render::cell_to_world(m.position))
+                            .unwrap_or(from + glam::Vec3::X);
+                        self.arena.play_attack(attacker_id, to - from);
+                        self.impact_timer = 0.85;
+                        self.enemy_step_timer = 0.85;
+                    }
+                    Some(Action::Move { .. }) => {
+                        self.enemy_step_timer = 0.38;
+                    }
+                    Some(_) => {
+                        self.enemy_step_timer = 0.25;
+                    }
+                    None => {
+                        self.mission.finish_enemy_turn();
+                        self.enemy_step_timer = 0.0;
+                    }
+                }
+            }
+        }
+
         self.fly.apply(dt, self.keys);
         self.keys.look_dx = 0.0;
         self.keys.look_dy = 0.0;
         self.keys.wheel = 0.0;
 
-        self.arena.sync_mechs(&mut self.engine, &self.mission);
+        self.arena
+            .tick(&mut self.engine, &self.mission, self.selected_player, dt);
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let egui_context = self.egui_state.egui_ctx().clone();
 
         let mut hud_action = None;
         let egui_output = egui_context.run_ui(raw_input, |egui_ctx| {
-            // Right side-panel so the 3D stage stays visible
-            egui::Panel::right("hud")
-                .default_size(360.0)
-                .frame(egui::Frame::side_top_panel(&egui_ctx.style()).inner_margin(10.0))
-                .show(egui_ctx, |ui| {
-                    hud_action = ui::side_hud(
-                        ui,
-                        &self.mission,
-                        self.view_mode,
-                        &mut self.selected_player,
-                        &mut self.selected_enemy,
-                        &mut self.selected_limb,
-                    );
-                });
+            #[allow(deprecated)]
+            {
+                egui::Panel::right("hud")
+                    .default_size(360.0)
+                    .frame(egui::Frame::side_top_panel(&egui_ctx.style()).inner_margin(10.0))
+                    .show(egui_ctx, |ui| {
+                        hud_action = ui::side_hud(
+                            ui,
+                            &self.mission,
+                            self.view_mode,
+                            &mut self.selected_player,
+                            &mut self.selected_enemy,
+                            &mut self.selected_limb,
+                        );
+                    });
+            }
         });
 
         if let Some(action) = hud_action {
-            match action {
-                ui::HudAction::Attack {
-                    attacker,
-                    target,
-                    limb,
-                } => {
-                    match self.mission.apply_action(Action::Attack {
-                        attacker_id: attacker,
-                        target_id: target,
-                        limb,
-                    }) {
-                        Ok(()) => {
-                            // Dramatic impact framing for ~1.15s
-                            self.impact_timer = 1.15;
-                        }
-                        Err(e) => {
-                            self.mission.log.push(format!("Attack failed: {e}"));
-                        }
-                    }
-                }
-                ui::HudAction::EndTurn => {
-                    self.mission.end_player_turn();
-                }
-                ui::HudAction::Reset => {
-                    self.mission = Mission::new_skirmish();
-                    self.selected_player = 0;
-                    self.selected_enemy = 10;
-                    self.selected_limb = LimbKind::Torso;
-                    self.impact_timer = 0.0;
-                    self.fly = render::FlyCam::for_mode(self.view_mode);
-                    self.arena.sync_mechs(&mut self.engine, &self.mission);
-                }
-                ui::HudAction::SetView(mode) => {
-                    if mode != self.view_mode {
-                        self.arena.clear(&mut self.engine);
-                        self.view_mode = mode;
-                        self.impact_timer = 0.0;
-                        self.arena = render::Arena::spawn(&mut self.engine, mode, &self.mission);
-                        self.fly = render::FlyCam::for_mode(mode);
-                    }
-                }
-            }
+            self.handle_hud(action);
         }
 
         self.egui_state
@@ -526,10 +546,105 @@ impl Game {
             self.window.scale_factor() as f32,
         );
 
-        self.hud_wants_pointer = self.egui_state.egui_ctx().wants_pointer_input();
-
         #[cfg(target_arch = "wasm32")]
         self.publish_controls_probe();
+    }
+
+    fn handle_hud(&mut self, action: ui::HudAction) {
+        match action {
+            ui::HudAction::Attack {
+                attacker,
+                target,
+                limb,
+            } => {
+                let from = self
+                    .mission
+                    .mech(attacker)
+                    .map(|m| render::cell_to_world(m.position));
+                let to = self
+                    .mission
+                    .mech(target)
+                    .map(|m| render::cell_to_world(m.position));
+                match self.mission.apply_action(Action::Attack {
+                    attacker_id: attacker,
+                    target_id: target,
+                    limb,
+                }) {
+                    Ok(()) => {
+                        if let (Some(f), Some(t)) = (from, to) {
+                            self.arena.play_attack(attacker, t - f);
+                        }
+                        self.impact_timer = 1.15;
+                    }
+                    Err(e) => {
+                        self.mission.log.push(format!("Attack failed: {e}"));
+                    }
+                }
+            }
+            ui::HudAction::Step(dir) => {
+                if let Some(m) = self.mission.mech(self.selected_player) {
+                    let to = m.position + dir.delta();
+                    if let Err(e) = self.mission.apply_action(Action::Move {
+                        unit_id: self.selected_player,
+                        to,
+                    }) {
+                        self.mission.log.push(e);
+                    }
+                }
+            }
+            ui::HudAction::Rotate(sign) => {
+                if let Some(m) = self.mission.mech(self.selected_player) {
+                    let facing = if sign < 0 {
+                        m.facing.rotate_ccw()
+                    } else {
+                        m.facing.rotate_cw()
+                    };
+                    if let Err(e) = self.mission.apply_action(Action::Rotate {
+                        unit_id: self.selected_player,
+                        facing,
+                    }) {
+                        self.mission.log.push(e);
+                    }
+                }
+            }
+            ui::HudAction::Wait => {
+                if let Err(e) = self.mission.apply_action(Action::Wait {
+                    unit_id: self.selected_player,
+                }) {
+                    self.mission.log.push(e);
+                }
+            }
+            ui::HudAction::EndTurn => {
+                if self.mission.phase == combat::TurnPhase::Player {
+                    self.mission.begin_enemy_turn();
+                    self.enemy_step_timer = 0.15;
+                }
+            }
+            ui::HudAction::Reset => {
+                self.mission = Mission::new_skirmish();
+                self.selected_player = 0;
+                self.selected_enemy = 10;
+                self.selected_limb = LimbKind::Torso;
+                self.impact_timer = 0.0;
+                self.enemy_step_timer = 0.0;
+                self.fly = render::FlyCam::for_mode(self.view_mode);
+                if self.view_mode == render::ViewMode::Battle {
+                    self.arena.clear(&mut self.engine);
+                    self.arena =
+                        render::Arena::spawn(&mut self.engine, self.view_mode, &self.mission);
+                }
+            }
+            ui::HudAction::SetView(mode) => {
+                if mode != self.view_mode {
+                    self.arena.clear(&mut self.engine);
+                    self.view_mode = mode;
+                    self.impact_timer = 0.0;
+                    self.enemy_step_timer = 0.0;
+                    self.arena = render::Arena::spawn(&mut self.engine, mode, &self.mission);
+                    self.fly = render::FlyCam::for_mode(mode);
+                }
+            }
+        }
     }
 }
 

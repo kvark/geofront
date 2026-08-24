@@ -1,5 +1,5 @@
 //! Battle stage + city overview: Kenney surface / Space Kit underground,
-//! Quaternius GLB mechs, Eva-style + impact cameras.
+//! Quaternius GLB mechs with lerp/bob/lunge, Eva-style + impact cameras.
 
 use std::collections::HashMap;
 
@@ -7,7 +7,7 @@ use glam::{IVec2, Mat4, Quat, Vec3};
 use log::info;
 
 use crate::combat::Mission;
-use crate::units::{Mech, Team};
+use crate::units::{Facing, Mech, Team};
 
 /// World units per tactical grid cell (matches Kenney road tile width).
 pub const CELL: f32 = 2.0;
@@ -37,11 +37,18 @@ impl ViewMode {
     }
 }
 
+struct MechVisual {
+    handle: blade_engine::ObjectHandle,
+    pos: Vec3,
+    yaw: f32,
+    bob: f32,
+    punch: f32,
+    punch_dir: Vec3,
+}
+
 pub struct Arena {
     pub kind: ViewMode,
-    /// Mech id → engine object handle (battle only).
-    pub mech_handles: HashMap<u32, blade_engine::ObjectHandle>,
-    /// All static stage objects (roads, buildings, corridors…) for cleanup.
+    visuals: HashMap<u32, MechVisual>,
     stage_handles: Vec<blade_engine::ObjectHandle>,
 }
 
@@ -49,7 +56,7 @@ impl Arena {
     pub fn spawn(engine: &mut blade_engine::Engine, mode: ViewMode, mission: &Mission) -> Self {
         info!("Spawning arena: {:?}", mode);
         let mut stage_handles = Vec::new();
-        let mut mech_handles = HashMap::new();
+        let mut visuals = HashMap::new();
 
         match mode {
             ViewMode::Battle | ViewMode::CitySurface => {
@@ -62,8 +69,8 @@ impl Arena {
                 ));
                 if mode == ViewMode::Battle {
                     for mech in &mission.mechs {
-                        let handle = spawn_mech_silhouette(engine, mech);
-                        mech_handles.insert(mech.id, handle);
+                        let vis = spawn_mech(engine, mech);
+                        visuals.insert(mech.id, vis);
                     }
                 }
             }
@@ -74,55 +81,194 @@ impl Arena {
 
         Self {
             kind: mode,
-            mech_handles,
+            visuals,
             stage_handles,
         }
     }
 
-    /// Remove every object this arena owns so a new layout can be spawned.
     pub fn clear(&mut self, engine: &mut blade_engine::Engine) {
-        for h in self.mech_handles.values().copied() {
-            engine.remove_object(h);
+        for vis in self.visuals.values() {
+            engine.remove_object(vis.handle);
         }
-        self.mech_handles.clear();
+        self.visuals.clear();
         for h in self.stage_handles.drain(..) {
             engine.remove_object(h);
         }
     }
 
-    /// Keep mech objects in sync with the tactical grid (battle only).
-    pub fn sync_mechs(&self, engine: &mut blade_engine::Engine, mission: &Mission) {
+    pub fn play_attack(&mut self, id: u32, toward: Vec3) {
+        if let Some(v) = self.visuals.get_mut(&id) {
+            v.punch = 0.38;
+            let dir = Vec3::new(toward.x, 0.0, toward.z);
+            v.punch_dir = if dir.length_squared() > 1e-4 {
+                dir.normalize()
+            } else {
+                Vec3::Z
+            };
+        }
+    }
+
+    /// Lerp mechs toward grid cells, bob while walking, lunge on attack.
+    pub fn tick(
+        &mut self,
+        engine: &mut blade_engine::Engine,
+        mission: &Mission,
+        selected: u32,
+        dt: f32,
+    ) {
         if self.kind != ViewMode::Battle {
             return;
         }
         for mech in &mission.mechs {
-            let Some(&handle) = self.mech_handles.get(&mech.id) else {
+            let Some(vis) = self.visuals.get_mut(&mech.id) else {
                 continue;
             };
-            if mech.destroyed {
-                engine.teleport_object(
-                    handle,
-                    blade_engine::Transform {
-                        position: (cell_to_world(mech.position) + Vec3::Y * -4.0).into(),
-                        orientation: quat_identity(),
-                    },
-                );
-                continue;
+            let target = if mech.destroyed {
+                cell_to_world(mech.position) + Vec3::Y * -3.2
+            } else {
+                cell_to_world(mech.position)
+            };
+            let to_target = target - vis.pos;
+            let dist = to_target.length();
+            let speed = if mech.destroyed { 5.0 } else { 9.0 };
+            if dist > 0.02 {
+                vis.pos += to_target.normalize() * (speed * dt).min(dist);
+                vis.bob += dt * 10.0;
+            } else {
+                vis.pos = target;
+                vis.bob *= (1.0 - dt * 8.0).max(0.0);
             }
+
+            let want_yaw = mech.facing.yaw();
+            let mut dy = want_yaw - vis.yaw;
+            while dy > std::f32::consts::PI {
+                dy -= std::f32::consts::TAU;
+            }
+            while dy < -std::f32::consts::PI {
+                dy += std::f32::consts::TAU;
+            }
+            vis.yaw += dy * (1.0 - (-12.0 * dt).exp());
+
+            if vis.punch > 0.0 {
+                vis.punch = (vis.punch - dt).max(0.0);
+            }
+
+            let bob_y = if mech.destroyed {
+                0.0
+            } else {
+                vis.bob.sin() * 0.08 * (dist * 2.0).min(1.0)
+            };
+            let lunge_k = if vis.punch > 0.0 {
+                // Ease out punch: forward then back.
+                let t = 1.0 - vis.punch / 0.38;
+                let s = if t < 0.45 {
+                    (t / 0.45) * 0.55
+                } else {
+                    (1.0 - (t - 0.45) / 0.55) * 0.55
+                };
+                s
+            } else {
+                0.0
+            };
+            let pos = vis.pos + Vec3::Y * bob_y + vis.punch_dir * lunge_k;
+            let q = Quat::from_rotation_y(vis.yaw);
             engine.teleport_object(
-                handle,
+                vis.handle,
                 blade_engine::Transform {
-                    position: cell_to_world(mech.position).into(),
-                    orientation: quat_identity(),
+                    position: pos.into(),
+                    orientation: mint::Quaternion {
+                        s: q.w,
+                        v: [q.x, q.y, q.z].into(),
+                    },
                 },
             );
-            let tint = match mech.team {
-                Team::Player => [0.55, 0.75, 1.0, 1.0],
-                Team::Enemy => [1.0, 0.42, 0.38, 1.0],
+
+            let pulse = if mech.id == selected && !mech.destroyed {
+                1.0 + 0.08 * (vis.bob * 0.35).sin().abs()
+            } else {
+                1.0
             };
-            engine.set_color_tint(handle, tint);
+            let tint = match mech.team {
+                Team::Player => [0.85 * pulse, 1.05 * pulse, 1.35 * pulse, 1.0],
+                Team::Enemy => [1.35 * pulse, 0.55, 0.45, 1.0],
+            };
+            engine.set_color_tint(vis.handle, tint);
+        }
+
+        draw_tactical_overlay(engine, mission, selected);
+    }
+}
+
+fn draw_tactical_overlay(engine: &mut blade_engine::Engine, mission: &Mission, selected: u32) {
+    let Some(mech) = mission.mech(selected) else {
+        return;
+    };
+    if mech.destroyed || !matches!(mission.phase, crate::combat::TurnPhase::Player) {
+        return;
+    }
+
+    let mut lines = Vec::new();
+    let y = 0.04;
+    let half = CELL * 0.46;
+
+    let push_quad = |lines: &mut Vec<blade_render::DebugLine>, c: Vec3, color: u32| {
+        let pts = [
+            [c.x - half, y, c.z - half],
+            [c.x + half, y, c.z - half],
+            [c.x + half, y, c.z + half],
+            [c.x - half, y, c.z + half],
+        ];
+        for i in 0..4 {
+            lines.push(blade_render::DebugLine {
+                a: blade_render::DebugPoint {
+                    pos: pts[i],
+                    color,
+                },
+                b: blade_render::DebugPoint {
+                    pos: pts[(i + 1) % 4],
+                    color,
+                },
+            });
+        }
+    };
+
+    // Movement tiles
+    if mech.can_move() {
+        for dir in [Facing::North, Facing::East, Facing::South, Facing::West] {
+            let to = mech.position + dir.delta();
+            if mission.grid.in_bounds(to) && !mission.occupied(to, Some(mech.id)) {
+                push_quad(&mut lines, cell_to_world(to), 0x88_FF_CC_44);
+            }
         }
     }
+
+    // Attack range ring on enemies
+    let range = mech.attack_range();
+    for other in mission.living_mechs(Team::Enemy) {
+        let color = if crate::combat::Grid::manhattan(mech.position, other.position) <= range {
+            0xFF_66_55_AA
+        } else {
+            0x88_44_33_55
+        };
+        push_quad(&mut lines, cell_to_world(other.position), color);
+    }
+
+    // Facing arrow
+    let origin = cell_to_world(mech.position) + Vec3::Y * 0.15;
+    let fwd = Vec3::new(mech.facing.delta().x as f32, 0.0, mech.facing.delta().y as f32);
+    let tip = origin + fwd * 1.15;
+    lines.push(blade_render::DebugLine {
+        a: blade_render::DebugPoint {
+            pos: origin.into(),
+            color: 0xFF_EE_88_FF,
+        },
+        b: blade_render::DebugPoint {
+            pos: tip.into(),
+            color: 0xFF_EE_88_FF,
+        },
+    });
+
+    engine.add_debug_lines(&lines);
 }
 
 fn quat_identity() -> mint::Quaternion<f32> {
@@ -235,11 +381,7 @@ fn spawn_surface_buildings(
                 commercial[i % commercial.len()]
             };
             let scale = if path.contains("skyscraper") {
-                if dense {
-                    1.25
-                } else {
-                    1.15
-                }
+                if dense { 1.25 } else { 1.15 }
             } else {
                 1.0
             };
@@ -257,30 +399,34 @@ fn spawn_surface_buildings(
     handles
 }
 
-/// Simple modular underground facility from Space Kit pieces.
+/// Modular Geofront: pieces abut on edges, never share floor area (avoids Z-fight).
+///
+/// Kenney Space Kit extents (XZ):
+/// - room-large 20×20, room-small 12×12, corridor 4×4, corridor-wide 8×8,
+///   intersection 4×4, gate 4.2×1.4
 fn spawn_underground_facility(engine: &mut blade_engine::Engine) -> Vec<blade_engine::ObjectHandle> {
     let mut handles = Vec::new();
+    // Hangar at origin occupies x,z ∈ [-10, 10]
     let placements: &[(&str, [f32; 3], f32)] = &[
         ("models/space/room-large.glb", [0.0, 0.0, 0.0], 1.0),
-        ("models/space/corridor-wide.glb", [0.0, 0.0, 8.0], 1.0),
-        ("models/space/corridor-wide.glb", [0.0, 0.0, -8.0], 1.0),
-        ("models/space/corridor.glb", [8.0, 0.0, 0.0], 1.0),
-        ("models/space/corridor.glb", [-8.0, 0.0, 0.0], 1.0),
-        ("models/space/corridor-intersection.glb", [0.0, 0.0, 16.0], 1.0),
-        ("models/space/corridor-intersection.glb", [0.0, 0.0, -16.0], 1.0),
-        ("models/space/room-small.glb", [12.0, 0.0, 0.0], 1.0),
-        ("models/space/room-small.glb", [-12.0, 0.0, 0.0], 1.0),
-        ("models/space/room-wide.glb", [0.0, 0.0, 22.0], 1.0),
-        ("models/space/gate.glb", [0.0, 0.0, -22.0], 1.0),
-        ("models/space/gate-door.glb", [16.0, 0.0, 8.0], 1.0),
-        ("models/space/stairs.glb", [-10.0, 0.0, 10.0], 1.0),
-        ("models/space/corridor-corner.glb", [8.0, 0.0, 8.0], 1.0),
-        ("models/space/corridor-corner.glb", [-8.0, 0.0, -8.0], 1.0),
-        ("models/space/corridor-junction.glb", [0.0, 0.0, 4.0], 1.0),
-        ("models/space/template-floor.glb", [4.0, -0.05, 4.0], 1.2),
-        ("models/space/template-floor.glb", [-4.0, -0.05, -4.0], 1.2),
-        ("models/space/template-wall.glb", [14.0, 0.0, -6.0], 1.0),
-        ("models/space/room-large.glb", [0.0, 0.0, 28.0], 0.9),
+        // North spine: hangar z=10 → wide corridor 8 tall, center z=14
+        ("models/space/corridor-wide.glb", [0.0, 0.0, 14.0], 1.0),
+        // z=18 → intersection 4, center z=20
+        ("models/space/corridor-intersection.glb", [0.0, 0.0, 20.0], 1.0),
+        // z=22 → command room-small 12, center z=28
+        ("models/space/room-small.glb", [0.0, 0.0, 28.0], 1.0),
+        // East spur: hangar x=10 → corridor 4, center x=12
+        ("models/space/corridor.glb", [12.0, 0.0, 0.0], 1.0),
+        ("models/space/room-small.glb", [20.0, 0.0, 0.0], 1.0),
+        // West spur
+        ("models/space/corridor.glb", [-12.0, 0.0, 0.0], 1.0),
+        ("models/space/room-small.glb", [-20.0, 0.0, 0.0], 1.0),
+        // South airlock: hangar z=-10, gate depth 1.4, center z=-10.7
+        ("models/space/gate.glb", [0.0, 0.0, -10.7], 1.0),
+        ("models/space/gate-door.glb", [0.05, 0.0, -11.35], 1.0),
+        // Side stair well east of north hall, outside hangar/room footprints
+        ("models/space/stairs.glb", [16.0, 0.0, 14.0], 1.0),
+        ("models/space/corridor-corner.glb", [12.0, 0.0, 14.0], 1.0),
     ];
     for (i, (path, pos, scale)) in placements.iter().enumerate() {
         handles.push(add_static(engine, format!("ug-{i}"), path, *pos, *scale));
@@ -288,12 +434,7 @@ fn spawn_underground_facility(engine: &mut blade_engine::Engine) -> Vec<blade_en
     handles
 }
 
-/// Quaternius GLB mech (scale 0.4 ≈ 2.8 u tall on the Kenney grid).
-/// Clips Idle/Walk/Punch/Death/… are embedded; playback needs Blade skin support.
-const MECH_SCALE: f32 = 0.4;
-
 fn mech_glb_path(mech: &Mech) -> &'static str {
-    // Alternate models within each team so the field is not identical clones.
     match (mech.team, mech.id % 2) {
         (Team::Player, 0) => "models/mechs/Stan.glb",
         (Team::Player, _) => "models/mechs/Mike.glb",
@@ -302,31 +443,51 @@ fn mech_glb_path(mech: &Mech) -> &'static str {
     }
 }
 
-fn spawn_mech_silhouette(
-    engine: &mut blade_engine::Engine,
-    mech: &Mech,
-) -> blade_engine::ObjectHandle {
-    let path = mech_glb_path(mech);
+fn spawn_mech(engine: &mut blade_engine::Engine, mech: &Mech) -> MechVisual {
+    let color = match mech.team {
+        Team::Player => [0.50, 0.68, 0.95, 1.0],
+        Team::Enemy => [0.95, 0.38, 0.32, 1.0],
+    };
+    // Quaternius GLBs are in assets/models/mechs (skinned). Blade's raster path
+    // currently draws them unlit/black, so battle uses a readable silhouette.
+    // Swap to mech_glb_path() once skin/PBR lighting lands.
+    let _ = mech_glb_path(mech);
+    let model = engine.create_model(
+        &format!("mech-{}", mech.id),
+        vec![
+            box_geo("leg-l", color, [-0.28, 0.55, 0.0], [0.16, 0.55, 0.18]),
+            box_geo("leg-r", color, [0.28, 0.55, 0.0], [0.16, 0.55, 0.18]),
+            box_geo("torso", color, [0.0, 1.45, 0.0], [0.42, 0.55, 0.28]),
+            box_geo("head", color, [0.0, 2.25, 0.05], [0.22, 0.22, 0.22]),
+            box_geo("arm-l", color, [-0.58, 1.55, 0.0], [0.12, 0.42, 0.12]),
+            box_geo("arm-r", color, [0.58, 1.55, 0.0], [0.12, 0.42, 0.12]),
+            box_geo("pad-l", color, [-0.48, 1.85, 0.0], [0.18, 0.12, 0.18]),
+            box_geo("pad-r", color, [0.48, 1.85, 0.0], [0.18, 0.12, 0.18]),
+        ],
+    );
     let pos = cell_to_world(mech.position);
-    engine.add_object(
-        &blade_engine::config::Object {
-            name: mech.name.clone(),
-            visuals: vec![blade_engine::config::Visual {
-                model: path.into(),
-                scale: MECH_SCALE,
-                pos: [0.0; 3].into(),
-                rot: [0.0; 3].into(),
-                front_face: blade_engine::config::FrontFace::default(),
-            }],
-            colliders: vec![],
-            additional_mass: None,
-        },
+    let yaw = mech.facing.yaw();
+    let q = Quat::from_rotation_y(yaw);
+    let handle = engine.add_object_with_model(
+        &mech.name,
+        model,
         blade_engine::Transform {
             position: pos.into(),
-            orientation: quat_identity(),
+            orientation: mint::Quaternion {
+                s: q.w,
+                v: [q.x, q.y, q.z].into(),
+            },
         },
         blade_engine::DynamicInput::SetPosition,
-    )
+    );
+    MechVisual {
+        handle,
+        pos,
+        yaw,
+        bob: 0.0,
+        punch: 0.0,
+        punch_dir: Vec3::Z,
+    }
 }
 
 fn box_geo(
@@ -378,7 +539,7 @@ fn box_geo(
         base_color_factor: color,
         metalness: 0.40,
         roughness: 0.42,
-        emissive_factor: [0.0, 0.0, 0.0],
+        emissive_factor: [0.04, 0.05, 0.06],
     }
 }
 
@@ -447,7 +608,6 @@ pub fn combat_camera(
     let along = (e - p).normalize_or_zero();
     let side = along.cross(Vec3::Y).normalize_or_zero();
 
-    // Impact blend: 0 = normal hero, 1 = peak impact
     let k = (impact_t / 1.15).clamp(0.0, 1.0);
     let k = k * k;
 
@@ -460,7 +620,7 @@ pub fn combat_camera(
     frame_camera(eye, focus + Vec3::Y * (k * 0.4), fov)
 }
 
-/// Elevated city overview cameras.
+/// Elevated city overview cameras — also used to seed FlyCam.
 pub fn city_camera(mode: ViewMode) -> blade_engine::FrameCamera {
     match mode {
         ViewMode::CitySurface => {
@@ -469,11 +629,12 @@ pub fn city_camera(mode: ViewMode) -> blade_engine::FrameCamera {
             frame_camera(eye, focus, 0.70)
         }
         ViewMode::CityUnderground => {
-            let eye = Vec3::new(-14.0, 12.0, -10.0);
-            let focus = Vec3::new(0.0, 1.5, 4.0);
+            let eye = Vec3::new(-18.0, 16.0, -16.0);
+            let focus = Vec3::new(0.0, 1.5, 8.0);
             frame_camera(eye, focus, 0.78)
         }
-        ViewMode::Battle => FlyCam::for_mode(ViewMode::Battle).camera(),
+        ViewMode::Battle => FlyCam::from_eye_focus(Vec3::new(-2.0, 3.4, 9.0), Vec3::new(7.0, 1.5, 7.0))
+            .camera(),
     }
 }
 
@@ -515,8 +676,14 @@ pub struct FlyCam {
 impl FlyCam {
     pub fn for_mode(mode: ViewMode) -> Self {
         let (eye, focus) = match mode {
-            ViewMode::CitySurface => (Vec3::new(-6.0, 18.0, -4.0), Vec3::new(7.0, 2.0, 7.0)),
-            ViewMode::CityUnderground => (Vec3::new(-14.0, 12.0, -10.0), Vec3::new(0.0, 1.5, 4.0)),
+            ViewMode::CitySurface | ViewMode::CityUnderground => {
+                // Keep FlyCam seed in lockstep with city_camera.
+                let _ = city_camera(mode);
+                match mode {
+                    ViewMode::CitySurface => (Vec3::new(-6.0, 18.0, -4.0), Vec3::new(7.0, 2.0, 7.0)),
+                    _ => (Vec3::new(-18.0, 16.0, -16.0), Vec3::new(0.0, 1.5, 8.0)),
+                }
+            }
             ViewMode::Battle => (Vec3::new(-2.0, 3.4, 9.0), Vec3::new(7.0, 1.5, 7.0)),
         };
         let mut cam = Self::from_eye_focus(eye, focus);

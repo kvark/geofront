@@ -86,6 +86,7 @@
       window.__gfKeys = Object.create(null);
       window.__gfPtr = { dx: 0, dy: 0, wheel: 0, down: false, x: 0, y: 0 };
       window.__gfCam = { yaw: 0, pitch: 0, speed: 0, x: 0, y: 0, z: 0 };
+      window.__gfView = "";
       const GAME_KEYS = new Set([
         "KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE",
         "ShiftLeft", "ShiftRight", "Space", "ControlLeft", "ControlRight",
@@ -157,7 +158,7 @@
       };
     </script>
     <script type="module">
-      import init, { start } from "./pkg/geofront.js?v=fly2";
+      import init, { start } from "./pkg/geofront.js?v=mechs3";
       const boot = document.getElementById("boot");
       const hint = boot && boot.querySelector(".hint");
       const isControlFlow = (err) =>

@@ -1,5 +1,7 @@
 //! City grid, buildings (HP, types), living-city simulation, protection level / funding.
 
+#![allow(dead_code)]
+
 /// Placeholder for the single detailed city.
 pub struct City {
     // grid / sparse buildings, HP, destruction states
