@@ -13,7 +13,7 @@ Evangelion-inspired hybrid of XCOM-style base management and *Into the Breach*-s
 ## Status
 
 - **Combat** — turn-based skirmish on an 8×8 street grid. Each unit gets move points (orthogonal steps) then one action (attack / wait). Facing, limb targeting, mobility/firepower from limbs, sequential enemy phase.
-- **Presentation** — mechs lerp between cells, bob while walking, lunge on attack. Move tiles and facing drawn on the ground. Eva-style close-up camera with impact framing.
+- **Presentation** — Quaternius skinned GLBs play Idle / Walk / Punch / Hit / Death via `Engine::set_animation`. Street lamps and hangar fixtures are raster point lights; attacks flash. Move tiles and facing drawn on the ground. Eva-style close-up camera with impact framing.
 - **City** — Kenney surface block + Space Kit underground hangar (pieces abut on edges, no stacked floors).
 - **HUD** — view switcher, N/W/E/S step, rotate, attack, wait, end turn (Blade + egui).
 - **Dual target** — native + WASM (assets embedded via `include_dir` + Blade VFS).
