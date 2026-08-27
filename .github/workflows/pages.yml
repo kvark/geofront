@@ -21,6 +21,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Sync Blade shaders
+        run: bash scripts/fetch-shaders.sh
+
       - name: Setup Rust
         run: |
           rustup toolchain install 1.92.0 --profile minimal --target wasm32-unknown-unknown
