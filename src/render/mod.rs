@@ -1,5 +1,5 @@
 //! Battle stage + city overview: Kenney surface / Space Kit underground,
-//! Quaternius GLB mechs with lerp/bob/lunge, Eva-style + impact cameras.
+//! Quaternius skinned GLB mechs (Idle/Walk/Punch/Death), street/hangar lights.
 
 use std::collections::HashMap;
 
@@ -37,13 +37,26 @@ impl ViewMode {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MechClip {
+    Idle,
+    Walk,
+    Punch,
+    Death,
+    Hit,
+}
+
 struct MechVisual {
     handle: blade_engine::ObjectHandle,
     pos: Vec3,
     yaw: f32,
     bob: f32,
     punch: f32,
+    hit: f32,
     punch_dir: Vec3,
+    clip: MechClip,
+    /// George inserts Tall clips, so Walk is 16 instead of 15.
+    walk_index: usize,
 }
 
 pub struct Arena {
@@ -96,16 +109,88 @@ impl Arena {
         }
     }
 
-    pub fn play_attack(&mut self, id: u32, toward: Vec3) {
+    pub fn play_attack(&mut self, engine: &mut blade_engine::Engine, id: u32, toward: Vec3) {
         if let Some(v) = self.visuals.get_mut(&id) {
-            v.punch = 0.38;
+            v.punch = 0.55;
             let dir = Vec3::new(toward.x, 0.0, toward.z);
             v.punch_dir = if dir.length_squared() > 1e-4 {
                 dir.normalize()
             } else {
                 Vec3::Z
             };
+            set_clip(engine, v, MechClip::Punch, false);
         }
+    }
+
+    pub fn play_hit(&mut self, engine: &mut blade_engine::Engine, id: u32) {
+        if let Some(v) = self.visuals.get_mut(&id) {
+            if v.clip == MechClip::Death {
+                return;
+            }
+            v.hit = 0.48;
+            set_clip(engine, v, MechClip::Hit, false);
+        }
+    }
+
+    /// Street lamps / hangar fixtures + a brief impact flash.
+    pub fn sync_lights(&self, engine: &mut blade_engine::Engine, mission: &Mission) {
+        let mut lights: Vec<blade_render::PointLight> = Vec::new();
+        let push = |lights: &mut Vec<blade_render::PointLight>, pos: [f32; 3], color: [f32; 3], radius: f32| {
+            if lights.len() >= blade_render::MAX_POINT_LIGHTS {
+                return;
+            }
+            lights.push(blade_render::PointLight {
+                position: pos.into(),
+                color: color.into(),
+                radius,
+            });
+        };
+
+        match self.kind {
+            ViewMode::CityUnderground => {
+                for pos in [
+                    [0.0, 3.2, 0.0],
+                    [0.0, 3.0, 14.0],
+                    [0.0, 3.0, 28.0],
+                    [20.0, 3.0, 0.0],
+                    [-20.0, 3.0, 0.0],
+                    [0.0, 2.4, -10.0],
+                ] {
+                    push(&mut lights, pos, [4.2, 3.1, 1.8], 14.0);
+                }
+            }
+            ViewMode::CitySurface | ViewMode::Battle => {
+                for z in [1i32, 4, 7] {
+                    for x in [1i32, 4, 7] {
+                        let p = cell_to_world(IVec2::new(x, z));
+                        push(&mut lights, [p.x, 3.4, p.z], [3.4, 3.1, 2.4], 7.5);
+                    }
+                }
+            }
+        }
+
+        if self.kind == ViewMode::Battle {
+            for vis in self.visuals.values() {
+                if vis.punch > 0.0 {
+                    let flash = vis.pos + Vec3::Y * 1.6 + vis.punch_dir * 0.8;
+                    let k = vis.punch / 0.55;
+                    push(
+                        &mut lights,
+                        flash.into(),
+                        [18.0 * k, 8.0 * k, 2.5 * k],
+                        6.0,
+                    );
+                }
+            }
+            for mech in &mission.mechs {
+                if mech.destroyed {
+                    let p = cell_to_world(mech.position);
+                    push(&mut lights, [p.x, 0.6, p.z], [1.6, 0.35, 0.12], 4.0);
+                }
+            }
+        }
+
+        engine.set_point_lights(&lights);
     }
 
     /// Lerp mechs toward grid cells, bob while walking, lunge on attack.
@@ -152,6 +237,9 @@ impl Arena {
             if vis.punch > 0.0 {
                 vis.punch = (vis.punch - dt).max(0.0);
             }
+            if vis.hit > 0.0 {
+                vis.hit = (vis.hit - dt).max(0.0);
+            }
 
             let bob_y = if mech.destroyed {
                 0.0
@@ -193,6 +281,24 @@ impl Arena {
                 Team::Enemy => [1.35 * pulse, 0.55, 0.45, 1.0],
             };
             engine.set_color_tint(vis.handle, tint);
+
+            let want = if mech.destroyed {
+                MechClip::Death
+            } else if vis.punch > 0.0 {
+                MechClip::Punch
+            } else if vis.hit > 0.0 {
+                MechClip::Hit
+            } else if dist > 0.08 {
+                MechClip::Walk
+            } else {
+                MechClip::Idle
+            };
+            set_clip(
+                engine,
+                vis,
+                want,
+                matches!(want, MechClip::Idle | MechClip::Walk),
+            );
         }
 
         draw_tactical_overlay(engine, mission, selected);
@@ -443,34 +549,54 @@ fn mech_glb_path(mech: &Mech) -> &'static str {
     }
 }
 
+fn clip_index(clip: MechClip, walk_index: usize) -> usize {
+    match clip {
+        MechClip::Idle => 5,
+        MechClip::Walk => walk_index,
+        MechClip::Punch => 10,
+        MechClip::Death => 1,
+        MechClip::Hit => 3,
+    }
+}
+
+fn set_clip(
+    engine: &mut blade_engine::Engine,
+    vis: &mut MechVisual,
+    clip: MechClip,
+    looping: bool,
+) {
+    if vis.clip == clip {
+        return;
+    }
+    vis.clip = clip;
+    let mut player = blade_engine::AnimationPlayer::new(clip_index(clip, vis.walk_index));
+    player.looping = looping;
+    if matches!(clip, MechClip::Punch | MechClip::Hit | MechClip::Death) {
+        player.speed = 1.15;
+    }
+    engine.set_animation(vis.handle, Some(player));
+}
+
 fn spawn_mech(engine: &mut blade_engine::Engine, mech: &Mech) -> MechVisual {
-    let color = match mech.team {
-        Team::Player => [0.50, 0.68, 0.95, 1.0],
-        Team::Enemy => [0.95, 0.38, 0.32, 1.0],
-    };
-    // Quaternius GLBs are in assets/models/mechs (skinned). Blade's raster path
-    // currently draws them unlit/black, so battle uses a readable silhouette.
-    // Swap to mech_glb_path() once skin/PBR lighting lands.
-    let _ = mech_glb_path(mech);
-    let model = engine.create_model(
-        &format!("mech-{}", mech.id),
-        vec![
-            box_geo("leg-l", color, [-0.28, 0.55, 0.0], [0.16, 0.55, 0.18]),
-            box_geo("leg-r", color, [0.28, 0.55, 0.0], [0.16, 0.55, 0.18]),
-            box_geo("torso", color, [0.0, 1.45, 0.0], [0.42, 0.55, 0.28]),
-            box_geo("head", color, [0.0, 2.25, 0.05], [0.22, 0.22, 0.22]),
-            box_geo("arm-l", color, [-0.58, 1.55, 0.0], [0.12, 0.42, 0.12]),
-            box_geo("arm-r", color, [0.58, 1.55, 0.0], [0.12, 0.42, 0.12]),
-            box_geo("pad-l", color, [-0.48, 1.85, 0.0], [0.18, 0.12, 0.18]),
-            box_geo("pad-r", color, [0.48, 1.85, 0.0], [0.18, 0.12, 0.18]),
-        ],
-    );
+    let path = mech_glb_path(mech);
+    // Quaternius pack is authored at ~7m; 0.4 puts feet on a 2-unit cell.
+    const SCALE: f32 = 0.4;
     let pos = cell_to_world(mech.position);
     let yaw = mech.facing.yaw();
     let q = Quat::from_rotation_y(yaw);
-    let handle = engine.add_object_with_model(
-        &mech.name,
-        model,
+    let handle = engine.add_object(
+        &blade_engine::config::Object {
+            name: mech.name.clone(),
+            visuals: vec![blade_engine::config::Visual {
+                model: path.into(),
+                scale: SCALE,
+                pos: [0.0; 3].into(),
+                rot: [0.0; 3].into(),
+                front_face: blade_engine::config::FrontFace::default(),
+            }],
+            colliders: vec![],
+            additional_mass: None,
+        },
         blade_engine::Transform {
             position: pos.into(),
             orientation: mint::Quaternion {
@@ -480,75 +606,20 @@ fn spawn_mech(engine: &mut blade_engine::Engine, mech: &Mech) -> MechVisual {
         },
         blade_engine::DynamicInput::SetPosition,
     );
-    MechVisual {
+    let walk_index = if path.contains("George") { 16 } else { 15 };
+    let mut vis = MechVisual {
         handle,
         pos,
         yaw,
         bob: 0.0,
         punch: 0.0,
+        hit: 0.0,
         punch_dir: Vec3::Z,
-    }
-}
-
-fn box_geo(
-    name: &str,
-    color: [f32; 4],
-    center: [f32; 3],
-    half: [f32; 3],
-) -> blade_render::ProceduralGeometry {
-    let [cx, cy, cz] = center;
-    let [hx, hy, hz] = half;
-    let corners = [
-        [cx - hx, cy - hy, cz - hz],
-        [cx + hx, cy - hy, cz - hz],
-        [cx + hx, cy + hy, cz - hz],
-        [cx - hx, cy + hy, cz - hz],
-        [cx - hx, cy - hy, cz + hz],
-        [cx + hx, cy - hy, cz + hz],
-        [cx + hx, cy + hy, cz + hz],
-        [cx - hx, cy + hy, cz + hz],
-    ];
-    let faces: [([usize; 4], [f32; 3]); 6] = [
-        ([0, 1, 2, 3], [0.0, 0.0, -1.0]),
-        ([5, 4, 7, 6], [0.0, 0.0, 1.0]),
-        ([4, 0, 3, 7], [-1.0, 0.0, 0.0]),
-        ([1, 5, 6, 2], [1.0, 0.0, 0.0]),
-        ([3, 2, 6, 7], [0.0, 1.0, 0.0]),
-        ([4, 5, 1, 0], [0.0, -1.0, 0.0]),
-    ];
-    let mut vertices = Vec::with_capacity(24);
-    let mut indices = Vec::with_capacity(36);
-    for (quad, n) in faces {
-        let base = vertices.len() as u32;
-        for &ci in &quad {
-            let p = corners[ci];
-            vertices.push(blade_render::Vertex {
-                position: p,
-                bitangent_sign: 1.0,
-                tex_coords: [0.0, 0.0],
-                normal: encode_normal(n),
-                tangent: encode_normal([1.0, 0.0, 0.0]),
-            });
-        }
-        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    }
-    blade_render::ProceduralGeometry {
-        name: name.into(),
-        vertices,
-        indices,
-        base_color_factor: color,
-        metalness: 0.40,
-        roughness: 0.42,
-        emissive_factor: [0.04, 0.05, 0.06],
-    }
-}
-
-fn encode_normal(v: [f32; 3]) -> u32 {
-    let pack = |f: f32| -> u32 {
-        let c = (f.clamp(-1.0, 1.0) * 127.0 + 0.5) as i8 as u8 as u32;
-        c
+        clip: MechClip::Hit, // force the first set_clip to apply Idle
+        walk_index,
     };
-    pack(v[0]) | (pack(v[1]) << 8) | (pack(v[2]) << 16)
+    set_clip(engine, &mut vis, MechClip::Idle, true);
+    vis
 }
 
 fn frame_camera(eye: Vec3, focus: Vec3, fov_y: f32) -> blade_engine::FrameCamera {
