@@ -1,9 +1,24 @@
 #include "brdf.inc.wgsl"
 #include "color.inc.wgsl"
+#include "skin.inc.wgsl"
+
+#use MAX_POINT_LIGHTS
+
+struct PointLight {
+    pos_radius: vec4<f32>,
+    color: vec4<f32>,
+}
+
+struct PointLightParams {
+    // x: submitted light count, y: stochastic seed
+    count_seed: vec4<f32>,
+    lights: array<PointLight, MAX_POINT_LIGHTS>,
+}
 
 struct RasterFrameParams {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
+    light_view_proj: mat4x4<f32>,
     camera_pos: vec4<f32>,
     // direction towards the light
     light_dir: vec4<f32>,
@@ -12,10 +27,14 @@ struct RasterFrameParams {
     ambient_color: vec4<f32>,
     // x: environment map enabled, y: the surface needs sRGB encoding
     settings: vec4<f32>,
+    // x: enabled, y: strength, z: receiver normal bias, w: texel size
+    shadow_params: vec4<f32>,
 }
 
 struct RasterDrawParams {
     model: mat4x4<f32>,
+    // Rotation of the object/geometry transform. Skinning assumes uniform
+    // scale, so a quaternion is sufficient for normals.
     normal_quat: vec4<f32>,
     base_color_factor: vec4<f32>,
     emissive_factor: vec4<f32>,
@@ -23,12 +42,12 @@ struct RasterDrawParams {
     material: vec4<f32>,
 }
 
-struct Vertex {
-    position: vec3<f32>,
-    bitangent_sign: f32,
-    tex_coords: vec2<f32>,
-    normal: u32,
-    tangent: u32,
+struct ShadowFrameParams {
+    light_view_proj: mat4x4<f32>,
+}
+
+struct ShadowDrawParams {
+    model: mat4x4<f32>,
 }
 
 struct VertexOutput {
@@ -41,6 +60,7 @@ struct VertexOutput {
 }
 
 var<uniform> frame_params: RasterFrameParams;
+var<uniform> light_params: PointLightParams;
 var<uniform> draw_params: RasterDrawParams;
 var samp: sampler;
 var base_color_tex: texture_2d<f32>;
@@ -48,24 +68,50 @@ var normal_tex: texture_2d<f32>;
 // green channel is roughness, blue channel is metalness
 var metallic_roughness_tex: texture_2d<f32>;
 var emissive_tex: texture_2d<f32>;
+var shadow_samp: sampler_comparison;
+var shadow_tex: texture_depth_2d;
 
-fn decode_normal(raw: u32) -> vec3<f32> {
-    return unpack4x8snorm(raw).xyz;
+var<uniform> shadow_frame_params: ShadowFrameParams;
+var<uniform> shadow_draw_params: ShadowDrawParams;
+
+@vertex
+fn raster_shadow_vs(input: Vertex) -> @builtin(position) vec4<f32> {
+    let world = shadow_draw_params.model * vec4<f32>(input.position, 1.0);
+    return shadow_frame_params.light_view_proj * world;
 }
+
+@vertex
+fn raster_shadow_skinned_vs(input: Vertex, skin_input: SkinVertex) -> @builtin(position) vec4<f32> {
+    let skinned = apply_affine(skin_blend(skin_input), input.position);
+    let world = shadow_draw_params.model * vec4<f32>(skinned, 1.0);
+    return shadow_frame_params.light_view_proj * world;
+}
+
+// GLES requires a fragment stage even for a depth-only render pass.
+@fragment
+fn raster_shadow_fs() {}
 
 fn quat_rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
     return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
 }
 
-@vertex
-fn raster_vs(input: Vertex) -> VertexOutput {
+fn raster_vertex(
+    input: Vertex,
+    position: vec3<f32>,
+    normal: vec3<f32>,
+    tangent: vec3<f32>,
+    bitangent_sign: f32,
+) -> VertexOutput {
     var out: VertexOutput;
-    let pos_world = draw_params.model * vec4<f32>(input.position, 1.0);
+    let pos_world = draw_params.model * vec4<f32>(position, 1.0);
     out.clip_pos = frame_params.view_proj * pos_world;
     out.world_pos = pos_world.xyz;
-    let n = normalize(quat_rotate(draw_params.normal_quat, decode_normal(input.normal)));
-    let t = normalize(quat_rotate(draw_params.normal_quat, decode_normal(input.tangent)));
-    let b = normalize(cross(n, t)) * input.bitangent_sign;
+    // GLES 3.00 requires matching uniform blocks in vs+fs. The multiply is
+    // zero, so lighting does not leak into the vertex stage.
+    out.world_pos.x += light_params.count_seed.x * 0.0;
+    let n = normalize(quat_rotate(draw_params.normal_quat, normal));
+    let t = normalize(quat_rotate(draw_params.normal_quat, tangent));
+    let b = normalize(cross(n, t)) * bitangent_sign;
     out.normal = n;
     out.tangent = t;
     out.bitangent = b;
@@ -73,10 +119,115 @@ fn raster_vs(input: Vertex) -> VertexOutput {
     return out;
 }
 
+@vertex
+fn raster_vs(input: Vertex) -> VertexOutput {
+    return raster_vertex(
+        input,
+        input.position,
+        decode_normal(input.normal),
+        decode_normal(input.tangent),
+        input.bitangent_sign,
+    );
+}
+
+@vertex
+fn raster_skinned_vs(input: Vertex, skin_input: SkinVertex) -> VertexOutput {
+    let skin = skin_blend(skin_input);
+    let linear = skin_linear(skin);
+    return raster_vertex(
+        input,
+        apply_affine(skin, input.position),
+        linear * decode_normal(input.normal),
+        linear * decode_normal(input.tangent),
+        input.bitangent_sign * sign(determinant(linear)),
+    );
+}
+
 fn map_equirect_dir_to_uv(dir: vec3<f32>) -> vec2<f32> {
     let yaw = atan2(dir.x, dir.z);
     let pitch = asin(clamp(dir.y, -1.0, 1.0));
     return vec2<f32>((yaw / PI + 1.0) * 0.5, pitch / PI + 0.5);
+}
+
+fn directional_shadow(world_pos: vec3<f32>, n: vec3<f32>) -> f32 {
+    if (frame_params.shadow_params.x < 0.5) {
+        return 1.0;
+    }
+    let receiver = world_pos + n * frame_params.shadow_params.z;
+    let clip = frame_params.light_view_proj * vec4<f32>(receiver, 1.0);
+    let ndc = clip.xyz / clip.w;
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    if (ndc.z <= 0.0 || ndc.z >= 1.0 || any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
+        return 1.0;
+    }
+
+    // Four bilinear comparison samples give a compact 4x4 percentage-closer filter.
+    let texel = frame_params.shadow_params.w;
+    let reference = ndc.z;
+    var visibility = 0.0;
+    visibility += textureSampleCompare(shadow_tex, shadow_samp, uv + vec2<f32>(-0.75, -0.75) * texel, reference);
+    visibility += textureSampleCompare(shadow_tex, shadow_samp, uv + vec2<f32>( 0.75, -0.75) * texel, reference);
+    visibility += textureSampleCompare(shadow_tex, shadow_samp, uv + vec2<f32>(-0.75,  0.75) * texel, reference);
+    visibility += textureSampleCompare(shadow_tex, shadow_samp, uv + vec2<f32>( 0.75,  0.75) * texel, reference);
+    visibility *= 0.25;
+    return mix(1.0, visibility, frame_params.shadow_params.y);
+}
+
+fn hash31(p: vec3<f32>) -> f32 {
+    return fract(sin(dot(p, vec3<f32>(127.1, 311.7, 74.7))) * 43758.5453);
+}
+
+fn point_light_score(light: PointLight, world_pos: vec3<f32>, n: vec3<f32>) -> f32 {
+    let delta = light.pos_radius.xyz - world_pos;
+    let dist2 = max(dot(delta, delta), 0.04);
+    let dist = sqrt(dist2);
+    let range = max(light.pos_radius.w, 0.01);
+    let falloff = max(1.0 - dist / range, 0.0);
+    let ldir = delta / dist;
+    let ndotl = max(dot(n, ldir), 0.0);
+    let intensity = max(light.color.x, max(light.color.y, light.color.z));
+    return intensity * falloff * falloff * (0.2 + 0.8 * ndotl);
+}
+
+fn shade_point_light(mat: Material, n: vec3<f32>, v: vec3<f32>, world_pos: vec3<f32>) -> vec3<f32> {
+    let count = min(u32(light_params.count_seed.x), MAX_POINT_LIGHTS);
+    if (count == 0u) {
+        return vec3<f32>(0.0);
+    }
+
+    // Weighted reservoir over the submitted lights. Each fragment independently
+    // samples one light with probability proportional to its local score.
+    // TODO: spatial acceleration once scenes carry more local lights than this cap.
+    var chosen = 0u;
+    var weight_sum = 0.0;
+    for (var i = 0u; i < MAX_POINT_LIGHTS; i++) {
+        if (i >= count) {
+            break;
+        }
+        let score = point_light_score(light_params.lights[i], world_pos, n);
+        if (score <= 0.0) {
+            continue;
+        }
+        weight_sum += score;
+        let u = hash31(world_pos + vec3<f32>(f32(i), light_params.count_seed.y, score));
+        if (u * weight_sum < score) {
+            chosen = i;
+        }
+    }
+    if (weight_sum <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+
+    let light = light_params.lights[chosen];
+    let delta = light.pos_radius.xyz - world_pos;
+    let dist2 = max(dot(delta, delta), 0.04);
+    let dist = sqrt(dist2);
+    let range = max(light.pos_radius.w, 0.01);
+    let falloff = max(1.0 - dist / range, 0.0);
+    let ldir = delta / dist;
+    let brdf = evaluate_brdf(mat, n, v, ldir);
+    let atten = falloff * falloff / dist2;
+    return (mat.diffuse_albedo * brdf.diffuse + brdf.specular) * light.color.xyz * atten;
 }
 
 @fragment
@@ -104,10 +255,12 @@ fn raster_fs(input: VertexOutput) -> @location(0) vec4<f32> {
     let l = normalize(frame_params.light_dir.xyz);
 
     let brdf = evaluate_brdf(mat, n, v, l);
-    let light = (mat.diffuse_albedo * brdf.diffuse + brdf.specular) * frame_params.light_color.xyz;
+    let visibility = directional_shadow(input.world_pos, n);
+    let light = (mat.diffuse_albedo * brdf.diffuse + brdf.specular) * frame_params.light_color.xyz * visibility;
     let ambient = evaluate_ambient(mat) * frame_params.ambient_color.xyz;
     let emissive = draw_params.emissive_factor.rgb * textureSample(emissive_tex, samp, input.uv).rgb;
-    let color = ambient + light + emissive;
+    let local = shade_point_light(mat, n, v, input.world_pos);
+    let color = ambient + light + local + emissive;
 
     let mapped = color / (color + vec3<f32>(1.0));
     return vec4<f32>(encode_surface_color(mapped, frame_params.settings.y > 0.5), 1.0);
