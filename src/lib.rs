@@ -211,16 +211,24 @@ impl Game {
                 z: 0.4,
             },
             light_color: mint::Vector3 {
-                x: 2.2,
-                y: 2.0,
-                z: 1.7,
+                x: 2.6,
+                y: 2.4,
+                z: 2.0,
             },
             ambient_color: mint::Vector3 {
-                x: 0.09,
-                y: 0.10,
-                z: 0.12,
+                x: 0.16,
+                y: 0.17,
+                z: 0.20,
             },
             space_sky: false,
+            directional_shadows: Some(blade_render::DirectionalShadowConfig {
+                resolution: 1024,
+                distance: 36.0,
+                depth: 90.0,
+                strength: 0.62,
+                normal_bias: 0.08,
+            }),
+            point_lights: Vec::new(),
         });
 
         let egui_context = egui::Context::default();
@@ -466,7 +474,9 @@ impl Game {
                             .mech(target_id)
                             .map(|m| render::cell_to_world(m.position))
                             .unwrap_or(from + glam::Vec3::X);
-                        self.arena.play_attack(attacker_id, to - from);
+                        self.arena
+                            .play_attack(&mut self.engine, attacker_id, to - from);
+                        self.arena.play_hit(&mut self.engine, target_id);
                         self.impact_timer = 0.85;
                         self.enemy_step_timer = 0.85;
                     }
@@ -491,6 +501,7 @@ impl Game {
 
         self.arena
             .tick(&mut self.engine, &self.mission, self.selected_player, dt);
+        self.arena.sync_lights(&mut self.engine, &self.mission);
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let egui_context = self.egui_state.egui_ctx().clone();
@@ -572,8 +583,9 @@ impl Game {
                 }) {
                     Ok(()) => {
                         if let (Some(f), Some(t)) = (from, to) {
-                            self.arena.play_attack(attacker, t - f);
+                            self.arena.play_attack(&mut self.engine, attacker, t - f);
                         }
+                        self.arena.play_hit(&mut self.engine, target);
                         self.impact_timer = 1.15;
                     }
                     Err(e) => {
