@@ -2,7 +2,7 @@
 # Re-sync Blade shaders from blade-render/code at the Cargo.toml rev.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REV="357777a4a167b7be2d1ee6131abe97b250be902c"
+REV="56666fcd12f843afcd0a124e9943c9565cec3e51"
 mkdir -p "$ROOT/assets/shaders"
 BASE="https://raw.githubusercontent.com/kvark/blade/${REV}/blade-render/code"
 for f in a-trous.wgsl brdf.inc.wgsl camera.inc.wgsl color.inc.wgsl \
