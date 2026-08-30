@@ -17,7 +17,7 @@ pub fn side_hud(
 
     ui.heading("Geofront");
     ui.label(match view_mode {
-        ViewMode::Battle => "Eva-style close-up combat",
+        ViewMode::Battle => "Close-up street combat",
         ViewMode::CitySurface => "Surface city overview",
         ViewMode::CityUnderground => "Underground facility overview",
     });
@@ -280,7 +280,7 @@ fn city_panel(ui: &mut egui::Ui, mode: ViewMode) {
     ui.label(match mode {
         ViewMode::CitySurface => {
             "Kenney city block — commercial towers and industrial fringe.\n\
-             Switch to Battle for Eva-style close combat in the street canyon."
+             Switch to Battle for close-up combat in the street canyon."
         }
         ViewMode::CityUnderground => {
             "Geofront hangar plus command, east/west wings, south airlock.\n\
