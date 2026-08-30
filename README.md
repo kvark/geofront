@@ -16,7 +16,7 @@ Hybrid of XCOM-style base management and *Into the Breach*-style focused mech co
 - **Presentation** — Quaternius skinned GLBs play Idle / Walk / Punch / Hit / Death via `Engine::set_animation`. Street lamps and hangar fixtures are raster point lights (cap reserved for attack flashes). Move tiles and facing drawn on the ground. Close-up camera with impact framing.
 - **City** — Kenney surface block + Space Kit underground hangar (pieces abut on edges, no stacked floors).
 - **HUD** — view switcher, N/W/E/S step, rotate, attack, wait, end turn (Blade + egui).
-- **Dual target** — native + WASM (assets embedded via `include_dir` + Blade VFS; WASM uses Blade's WebGL2 backend). Pinned to Blade `56666fcd` (WebGL2 buffer-class + canvas color-space fixes).
+- **Dual target** — native + WASM (assets embedded via `include_dir` + Blade VFS; WASM uses Blade's WebGL2 backend). Pinned to Blade `e3c7dd68` (#381: shadow FS + wasm32 GLES profile; includes #378/#379 buffer-class and canvas color-space fixes).
 
 See original design notes: https://github.com/kvark/ideas/blob/master/game/eva.md
 
