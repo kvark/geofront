@@ -126,6 +126,9 @@ struct Game {
     dragging: bool,
     last_cursor: Option<(f32, f32)>,
     last_redraw: time::Instant,
+    started_at: time::Instant,
+    /// Exit after this many seconds (GEOFRONT_QUIT_AFTER / GEOFRONT_SCREENSHOT).
+    quit_after: Option<f32>,
 }
 
 impl Drop for Game {
@@ -221,13 +224,19 @@ impl Game {
                 z: 0.20,
             },
             space_sky: false,
-            directional_shadows: Some(blade_render::DirectionalShadowConfig {
-                resolution: 1024,
-                distance: 36.0,
-                depth: 90.0,
-                strength: 0.62,
-                normal_bias: 0.08,
-            }),
+            // WebGL2 still traps on the depth pass even with raster_shadow_fs
+            // (#378/#379 fix buffers + color space, not this link). Gate on wasm.
+            directional_shadows: if cfg!(target_arch = "wasm32") {
+                None
+            } else {
+                Some(blade_render::DirectionalShadowConfig {
+                    resolution: 1024,
+                    distance: 36.0,
+                    depth: 90.0,
+                    strength: 0.62,
+                    normal_bias: 0.08,
+                })
+            },
             point_lights: Vec::new(),
         });
 
@@ -237,7 +246,20 @@ impl Game {
             egui_winit::State::new(egui_context, egui::ViewportId::ROOT, &window, None, None, None);
 
         let mission = Mission::new_skirmish();
-        let view_mode = render::ViewMode::CitySurface;
+        let view_mode = match std::env::var("GEOFRONT_VIEW").ok().as_deref() {
+            Some("battle") => render::ViewMode::Battle,
+            Some("underground") => render::ViewMode::CityUnderground,
+            Some("surface") => render::ViewMode::CitySurface,
+            _ => render::ViewMode::CitySurface,
+        };
+        let quit_after = std::env::var("GEOFRONT_QUIT_AFTER")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .or_else(|| {
+                std::env::var("GEOFRONT_SCREENSHOT")
+                    .ok()
+                    .map(|_| 8.0)
+            });
         let arena = render::Arena::spawn(&mut engine, view_mode, &mission);
         let fly = render::FlyCam::for_mode(view_mode);
 
@@ -258,6 +280,8 @@ impl Game {
             dragging: false,
             last_cursor: None,
             last_redraw: time::Instant::now(),
+            started_at: time::Instant::now(),
+            quit_after,
         }
     }
 
@@ -429,7 +453,9 @@ impl Game {
         match *event {
             WindowEvent::CloseRequested => return Err(QuitEvent),
             WindowEvent::RedrawRequested => {
-                self.on_draw();
+                if self.on_draw() {
+                    return Err(QuitEvent);
+                }
                 return Ok(ControlFlow::Poll);
             }
             _ => {}
@@ -437,10 +463,19 @@ impl Game {
         Ok(ControlFlow::Poll)
     }
 
-    fn on_draw(&mut self) {
+    /// Returns true when a timed capture/quit should end the process.
+    fn on_draw(&mut self) -> bool {
         let now = time::Instant::now();
         let dt = (now - self.last_redraw).as_secs_f32().min(0.05);
         self.last_redraw = now;
+        if let Some(limit) = self.quit_after {
+            if now.duration_since(self.started_at).as_secs_f32() >= limit {
+                if let Ok(path) = std::env::var("GEOFRONT_SCREENSHOT") {
+                    info!("Capture window ready for {path}");
+                }
+                return true;
+            }
+        }
 
         #[cfg(target_arch = "wasm32")]
         self.sample_web_input();
@@ -559,6 +594,7 @@ impl Game {
 
         #[cfg(target_arch = "wasm32")]
         self.publish_controls_probe();
+        false
     }
 
     fn handle_hud(&mut self, action: ui::HudAction) {
