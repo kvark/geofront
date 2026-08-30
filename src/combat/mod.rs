@@ -54,13 +54,15 @@ pub struct Mission {
 impl Mission {
     pub fn new_skirmish() -> Self {
         let grid = Grid::new(8, 8);
+        // Opening Manhattan distances are ≤ attack_range (4) so the first
+        // player volley and the smoke test can actually connect.
         let mut mechs = vec![
-            Mech::new_player(0, "Unit-01", IVec2::new(1, 3)),
-            Mech::new_player(1, "Unit-02", IVec2::new(1, 4)),
-            Mech::new_enemy(10, "Angel-A", IVec2::new(6, 3)),
-            Mech::new_enemy(11, "Angel-B", IVec2::new(6, 5)),
+            Mech::new_player(0, "Coil", IVec2::new(2, 3)),
+            Mech::new_player(1, "Bastion", IVec2::new(2, 4)),
+            Mech::new_enemy(10, "Razor", IVec2::new(5, 3)),
+            Mech::new_enemy(11, "Husk", IVec2::new(5, 5)),
         ];
-        let pilots = vec![Pilot::new(0, "Shinji"), Pilot::new(1, "Asuka")];
+        let pilots = vec![Pilot::new(0, "Nori"), Pilot::new(1, "Vesper")];
         mechs[0].pilot_id = Some(0);
         mechs[1].pilot_id = Some(1);
 
@@ -375,6 +377,7 @@ impl Mission {
     }
 
     pub fn smoke_run(&mut self, max_turns: u32) {
+        let mut player_hits = 0u32;
         for _ in 0..max_turns {
             if self.is_won() || self.is_lost() {
                 break;
@@ -382,16 +385,31 @@ impl Mission {
             let enemy_ids: Vec<u32> = self.living_mechs(Team::Enemy).map(|m| m.id).collect();
             let player_ids: Vec<u32> = self.living_mechs(Team::Player).map(|m| m.id).collect();
             for pid in player_ids {
-                if let Some(&eid) = enemy_ids.first() {
-                    let _ = self.apply_action(Action::Attack {
-                        attacker_id: pid,
-                        target_id: eid,
-                        limb: LimbKind::Torso,
-                    });
+                let Some(attacker) = self.mech(pid) else {
+                    continue;
+                };
+                let from = attacker.position;
+                let Some(&eid) = enemy_ids.iter().min_by_key(|&&id| {
+                    self.mech(id)
+                        .map(|m| Grid::manhattan(from, m.position))
+                        .unwrap_or(i32::MAX)
+                }) else {
+                    continue;
+                };
+                if self.apply_action(Action::Attack {
+                    attacker_id: pid,
+                    target_id: eid,
+                    limb: LimbKind::Torso,
+                })
+                .is_ok()
+                {
+                    player_hits += 1;
                 }
             }
             self.end_player_turn();
         }
+        self.log
+            .push(format!("SMOKE: player hits={player_hits}"));
         if self.is_won() {
             self.log.push("SMOKE: Mission won.".into());
         } else if self.is_lost() {
@@ -409,17 +427,20 @@ mod tests {
     #[test]
     fn orthogonal_step_and_action_lock() {
         let mut m = Mission::new_skirmish();
-        assert!(m.apply_action(Action::Move {
-            unit_id: 0,
-            to: IVec2::new(2, 3)
-        })
-        .is_ok());
-        assert_eq!(m.mech(0).unwrap().facing, Facing::East);
-        // Diagonal illegal
+        let start = m.mech(0).unwrap().position;
         assert!(m
             .apply_action(Action::Move {
                 unit_id: 0,
-                to: IVec2::new(3, 4)
+                to: start + IVec2::new(1, 0)
+            })
+            .is_ok());
+        assert_eq!(m.mech(0).unwrap().facing, Facing::East);
+        // Diagonal illegal
+        let pos = m.mech(0).unwrap().position;
+        assert!(m
+            .apply_action(Action::Move {
+                unit_id: 0,
+                to: pos + IVec2::new(1, 1)
             })
             .is_err());
         assert!(m
@@ -430,12 +451,44 @@ mod tests {
             })
             .is_ok());
         // Cannot move after acting
+        let pos = m.mech(0).unwrap().position;
         assert!(m
             .apply_action(Action::Move {
                 unit_id: 0,
-                to: IVec2::new(3, 3)
+                to: pos + IVec2::new(1, 0)
             })
             .is_err());
+    }
+
+    #[test]
+    fn opening_attack_in_range() {
+        let mut m = Mission::new_skirmish();
+        let a = m.mech(0).unwrap();
+        let b = m.mech(10).unwrap();
+        assert!(Grid::manhattan(a.position, b.position) <= a.attack_range());
+        assert!(m
+            .apply_action(Action::Attack {
+                attacker_id: 0,
+                target_id: 10,
+                limb: LimbKind::Torso,
+            })
+            .is_ok());
+    }
+
+    #[test]
+    fn smoke_lands_a_player_attack() {
+        let mut m = Mission::new_skirmish();
+        m.smoke_run(6);
+        assert!(
+            m.log.iter().any(|l| l.contains("SMOKE: player hits=")
+                && !l.ends_with("hits=0")),
+            "smoke log: {:?}",
+            m.log
+        );
+        assert!(m
+            .log
+            .iter()
+            .any(|l| l.contains("Coil attacked") || l.contains("Bastion attacked")));
     }
 
     #[test]

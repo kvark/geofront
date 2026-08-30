@@ -12,6 +12,9 @@ use crate::units::{Facing, Mech, Team};
 /// World units per tactical grid cell (matches Kenney road tile width).
 pub const CELL: f32 = 2.0;
 
+/// Punch clip + lunge + muzzle flash share one duration.
+const PUNCH_SECS: f32 = 0.55;
+
 /// Map grid cell → world position (Y-up). Feet on the road / floor surface.
 pub fn cell_to_world(pos: IVec2) -> Vec3 {
     Vec3::new(pos.x as f32 * CELL, 0.0, pos.y as f32 * CELL)
@@ -111,7 +114,7 @@ impl Arena {
 
     pub fn play_attack(&mut self, engine: &mut blade_engine::Engine, id: u32, toward: Vec3) {
         if let Some(v) = self.visuals.get_mut(&id) {
-            v.punch = 0.55;
+            v.punch = PUNCH_SECS;
             let dir = Vec3::new(toward.x, 0.0, toward.z);
             v.punch_dir = if dir.length_squared() > 1e-4 {
                 dir.normalize()
@@ -160,8 +163,10 @@ impl Arena {
                 }
             }
             ViewMode::CitySurface | ViewMode::Battle => {
-                for z in [1i32, 4, 7] {
-                    for x in [1i32, 4, 7] {
+                // 2×2 fixtures leave slots under MAX_POINT_LIGHTS=8 for punch
+                // flashes and wreck glows.
+                for z in [2i32, 6] {
+                    for x in [2i32, 6] {
                         let p = cell_to_world(IVec2::new(x, z));
                         push(&mut lights, [p.x, 3.4, p.z], [3.4, 3.1, 2.4], 7.5);
                     }
@@ -173,7 +178,7 @@ impl Arena {
             for vis in self.visuals.values() {
                 if vis.punch > 0.0 {
                     let flash = vis.pos + Vec3::Y * 1.6 + vis.punch_dir * 0.8;
-                    let k = vis.punch / 0.55;
+                    let k = vis.punch / PUNCH_SECS;
                     push(
                         &mut lights,
                         flash.into(),
@@ -208,8 +213,9 @@ impl Arena {
             let Some(vis) = self.visuals.get_mut(&mech.id) else {
                 continue;
             };
+            // Wrecks stay on the tile — a slight slump, not a fall-through.
             let target = if mech.destroyed {
-                cell_to_world(mech.position) + Vec3::Y * -3.2
+                cell_to_world(mech.position) + Vec3::Y * -0.12
             } else {
                 cell_to_world(mech.position)
             };
@@ -247,14 +253,13 @@ impl Arena {
                 vis.bob.sin() * 0.08 * (dist * 2.0).min(1.0)
             };
             let lunge_k = if vis.punch > 0.0 {
-                // Ease out punch: forward then back.
-                let t = 1.0 - vis.punch / 0.38;
-                let s = if t < 0.45 {
+                // Forward then back over the same window as `PUNCH_SECS`.
+                let t = (1.0 - vis.punch / PUNCH_SECS).clamp(0.0, 1.0);
+                if t < 0.45 {
                     (t / 0.45) * 0.55
                 } else {
                     (1.0 - (t - 0.45) / 0.55) * 0.55
-                };
-                s
+                }
             } else {
                 0.0
             };
@@ -639,7 +644,7 @@ fn frame_camera(eye: Vec3, focus: Vec3, fov_y: f32) -> blade_engine::FrameCamera
     }
 }
 
-/// Eva-style low hero camera. When `impact_t` is > 0 (seconds remaining),
+/// Low hero camera. When `impact_t` is > 0 (seconds remaining),
 /// pull into a tighter, more dramatic impact framing.
 pub fn combat_camera(
     mission: &Mission,
@@ -682,10 +687,10 @@ pub fn combat_camera(
     let k = (impact_t / 1.15).clamp(0.0, 1.0);
     let k = k * k;
 
-    let dist = 7.8 - k * 3.2;
-    let side_off = 4.6 - k * 1.8;
-    let height = 3.4 - k * 1.1;
-    let fov = 0.72 + k * 0.18;
+    let dist = 11.6 - k * 3.6;
+    let side_off = 6.4 - k * 2.0;
+    let height = 5.2 - k * 1.6;
+    let fov = 0.68 + k * 0.16;
 
     let eye = focus - along * dist + side * side_off + Vec3::Y * height;
     frame_camera(eye, focus + Vec3::Y * (k * 0.4), fov)
