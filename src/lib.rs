@@ -224,19 +224,15 @@ impl Game {
                 z: 0.20,
             },
             space_sky: false,
-            // WebGL2 still traps on the depth pass even with raster_shadow_fs
-            // (#378/#379 fix buffers + color space, not this link). Gate on wasm.
-            directional_shadows: if cfg!(target_arch = "wasm32") {
-                None
-            } else {
-                Some(blade_render::DirectionalShadowConfig {
-                    resolution: 1024,
-                    distance: 36.0,
-                    depth: 90.0,
-                    strength: 0.62,
-                    normal_bias: 0.08,
-                })
-            },
+            // blade#381 always attaches raster_shadow_fs so WebGL2 can link
+            // the depth pipeline. Same map on native and wasm.
+            directional_shadows: Some(blade_render::DirectionalShadowConfig {
+                resolution: 1024,
+                distance: 36.0,
+                depth: 90.0,
+                strength: 0.62,
+                normal_bias: 0.08,
+            }),
             point_lights: Vec::new(),
         });
 
