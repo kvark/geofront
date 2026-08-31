@@ -104,6 +104,31 @@ fn mount_embedded_assets() {
     info!("Mounted embedded assets into VFS");
 }
 
+fn initial_view_mode() -> render::ViewMode {
+    let from_env = std::env::var("GEOFRONT_VIEW").ok();
+    #[cfg(target_arch = "wasm32")]
+    let from_web = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .and_then(|q| {
+            let q = q.trim_start_matches('?');
+            q.split('&').find_map(|pair| {
+                let mut it = pair.splitn(2, '=');
+                match (it.next(), it.next()) {
+                    (Some("view"), Some(v)) => Some(v.to_string()),
+                    _ => None,
+                }
+            })
+        });
+    #[cfg(not(target_arch = "wasm32"))]
+    let from_web: Option<String> = None;
+    match from_env.as_deref().or(from_web.as_deref()) {
+        Some("battle") => render::ViewMode::Battle,
+        Some("underground") => render::ViewMode::CityUnderground,
+        Some("surface") => render::ViewMode::CitySurface,
+        _ => render::ViewMode::CitySurface,
+    }
+}
+
 struct QuitEvent;
 
 struct Game {
@@ -242,12 +267,7 @@ impl Game {
             egui_winit::State::new(egui_context, egui::ViewportId::ROOT, &window, None, None, None);
 
         let mission = Mission::new_skirmish();
-        let view_mode = match std::env::var("GEOFRONT_VIEW").ok().as_deref() {
-            Some("battle") => render::ViewMode::Battle,
-            Some("underground") => render::ViewMode::CityUnderground,
-            Some("surface") => render::ViewMode::CitySurface,
-            _ => render::ViewMode::CitySurface,
-        };
+        let view_mode = initial_view_mode();
         let quit_after = std::env::var("GEOFRONT_QUIT_AFTER")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -373,6 +393,16 @@ impl Game {
         set(&cam, "y", self.fly.pos.y as f64);
         set(&cam, "z", self.fly.pos.z as f64);
         let _ = js_sys::Reflect::set(&window, &JsValue::from_str("__gfCam"), &cam);
+        let mode = match self.view_mode {
+            render::ViewMode::Battle => "battle",
+            render::ViewMode::CitySurface => "surface",
+            render::ViewMode::CityUnderground => "underground",
+        };
+        let _ = js_sys::Reflect::set(
+            &window,
+            &JsValue::from_str("__gfMode"),
+            &JsValue::from_str(mode),
+        );
     }
 
     fn on_event(&mut self, event: &WindowEvent) -> Result<ControlFlow, QuitEvent> {
@@ -539,22 +569,20 @@ impl Game {
 
         let mut hud_action = None;
         let egui_output = egui_context.run_ui(raw_input, |egui_ctx| {
-            #[allow(deprecated)]
-            {
-                egui::Panel::right("hud")
-                    .default_size(360.0)
-                    .frame(egui::Frame::side_top_panel(&egui_ctx.style()).inner_margin(10.0))
-                    .show(egui_ctx, |ui| {
-                        hud_action = ui::side_hud(
-                            ui,
-                            &self.mission,
-                            self.view_mode,
-                            &mut self.selected_player,
-                            &mut self.selected_enemy,
-                            &mut self.selected_limb,
-                        );
-                    });
-            }
+            egui::SidePanel::right("hud")
+                .exact_width(360.0)
+                .resizable(false)
+                .frame(egui::Frame::side_top_panel(&egui_ctx.style()).inner_margin(10.0))
+                .show(egui_ctx, |ui| {
+                    hud_action = ui::side_hud(
+                        ui,
+                        &self.mission,
+                        self.view_mode,
+                        &mut self.selected_player,
+                        &mut self.selected_enemy,
+                        &mut self.selected_limb,
+                    );
+                });
         });
 
         if let Some(action) = hud_action {

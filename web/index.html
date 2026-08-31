@@ -73,6 +73,45 @@
         50% { width: 72%; opacity: 1; }
         100% { width: 8%; opacity: 0.55; }
       }
+      #chrome {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        z-index: 3;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        pointer-events: none;
+      }
+      #chrome .row {
+        display: flex;
+        gap: 6px;
+        pointer-events: auto;
+      }
+      #chrome button {
+        background: rgba(10, 12, 16, 0.78);
+        color: #c5ccd6;
+        border: 1px solid #2a3038;
+        border-radius: 3px;
+        padding: 6px 10px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        font: 600 11px/1 ui-sans-serif, system-ui, sans-serif;
+        cursor: pointer;
+      }
+      #chrome button:hover { border-color: #c5ccd6; }
+      #chrome button.active {
+        color: #0a0c10;
+        background: #c5ccd6;
+        border-color: #c5ccd6;
+      }
+      #chrome .hint {
+        pointer-events: none;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        color: #8b929c;
+        text-shadow: 0 1px 2px #0a0c10;
+      }
     </style>
   </head>
   <body>
@@ -81,12 +120,27 @@
       <div class="bar"><div class="fill"></div></div>
       <div class="hint">loading wasm</div>
     </div>
+    <div id="chrome" hidden>
+      <div class="row" id="views">
+        <button type="button" data-view="surface">Surface</button>
+        <button type="button" data-view="underground">Cavern</button>
+        <button type="button" data-view="battle">Battle</button>
+      </div>
+      <div class="hint">WASD fly · drag look · Q/E height · wheel dolly</div>
+    </div>
     <script>
       // Window-level input so the preview iframe actually receives WASD / drag.
       window.__gfKeys = Object.create(null);
       window.__gfPtr = { dx: 0, dy: 0, wheel: 0, down: false, x: 0, y: 0 };
       window.__gfCam = { yaw: 0, pitch: 0, speed: 0, x: 0, y: 0, z: 0 };
       window.__gfView = "";
+      window.__gfMode = "";
+      const params = new URLSearchParams(location.search);
+      const startView = params.get("view");
+      if (startView === "battle" || startView === "surface" || startView === "underground") {
+        window.__gfView = startView;
+        window.__gfMode = startView;
+      }
       const GAME_KEYS = new Set([
         "KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE",
         "ShiftLeft", "ShiftRight", "Space", "ControlLeft", "ControlRight",
@@ -156,29 +210,54 @@
           for (const c of codes) window.__gfKeys[c] = true;
         },
       };
+      const chrome = document.getElementById("chrome");
+      const paintViews = () => {
+        const mode = window.__gfMode || window.__gfView || "surface";
+        document.querySelectorAll("#views button").forEach((btn) => {
+          btn.classList.toggle("active", btn.dataset.view === mode);
+        });
+      };
+      document.getElementById("views").addEventListener("click", (e) => {
+        const btn = e.target.closest("button[data-view]");
+        if (!btn) return;
+        window.__gfView = btn.dataset.view;
+        window.__gfMode = btn.dataset.view;
+        paintViews();
+        const url = new URL(location.href);
+        url.searchParams.set("view", btn.dataset.view);
+        history.replaceState(null, "", url);
+      });
+      paintViews();
+      setInterval(paintViews, 500);
+      window.__controlsTest.setView = (name) => {
+        window.__gfView = name;
+        window.__gfMode = name;
+        paintViews();
+      };
     </script>
     <script type="module">
-      import init, { start } from "./pkg/geofront.js?v=mechs3";
+      import init, { start } from "./pkg/geofront.js?v=srgb380";
       const boot = document.getElementById("boot");
       const hint = boot && boot.querySelector(".hint");
+      const chrome = document.getElementById("chrome");
       const isControlFlow = (err) =>
         String(err).includes("Using exceptions for control flow");
-      try {
-        await init();
-        if (hint) hint.textContent = "starting";
-        start();
+      const ready = () => {
         boot?.remove();
+        if (chrome) chrome.hidden = false;
         document.querySelectorAll("canvas").forEach((c) => {
           c.tabIndex = 0;
           c.focus();
         });
+      };
+      try {
+        await init();
+        if (hint) hint.textContent = "starting";
+        start();
+        ready();
       } catch (err) {
         if (isControlFlow(err)) {
-          boot?.remove();
-          document.querySelectorAll("canvas").forEach((c) => {
-            c.tabIndex = 0;
-            c.focus();
-          });
+          ready();
         } else if (boot) {
           boot.innerHTML = "";
           const msg = document.createElement("div");
