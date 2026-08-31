@@ -17,10 +17,10 @@ name = "geofront"
 path = "src/main.rs"
 
 [dependencies]
-blade-engine = { git = "https://github.com/kvark/blade", rev = "e3c7dd68b2ca94ec97a7f08f84e6ca11fc804097" }
-blade-graphics = { git = "https://github.com/kvark/blade", rev = "e3c7dd68b2ca94ec97a7f08f84e6ca11fc804097" }
-blade-particle = { git = "https://github.com/kvark/blade", rev = "e3c7dd68b2ca94ec97a7f08f84e6ca11fc804097" }
-blade-render = { git = "https://github.com/kvark/blade", rev = "e3c7dd68b2ca94ec97a7f08f84e6ca11fc804097" }
+blade-engine = { git = "https://github.com/kvark/blade", rev = "2348c9360dcc216390317af49db715047d8af536" }
+blade-graphics = { git = "https://github.com/kvark/blade", rev = "2348c9360dcc216390317af49db715047d8af536" }
+blade-particle = { git = "https://github.com/kvark/blade", rev = "2348c9360dcc216390317af49db715047d8af536" }
+blade-render = { git = "https://github.com/kvark/blade", rev = "2348c9360dcc216390317af49db715047d8af536" }
 egui = "0.34"
 egui-winit = { version = "0.34", default-features = false, features = ["links"] }
 glam = { version = "0.30", features = ["mint"] }
@@ -47,6 +47,7 @@ web-sys = { version = "0.3", features = [
     "CssStyleDeclaration",
     "HtmlCanvasElement",
     "HtmlElement",
+    "Location",
     "Window",
 ] }
 web-time = "1"
