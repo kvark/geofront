@@ -15,8 +15,8 @@ Hybrid of XCOM-style base management and *Into the Breach*-style focused mech co
 - **Combat** — turn-based skirmish on an 8×8 street grid. Each unit gets move points (orthogonal steps) then one action (attack / wait). Facing, limb targeting, mobility/firepower from limbs, sequential enemy phase.
 - **Presentation** — Quaternius skinned GLBs play Idle / Walk / Punch / Hit / Death via `Engine::set_animation`. Street lamps and hangar fixtures are raster point lights (cap reserved for attack flashes). Move tiles and facing drawn on the ground. Close-up camera with impact framing.
 - **City** — Kenney surface block + Space Kit underground hangar (pieces abut on edges, no stacked floors).
-- **HUD** — view switcher, N/W/E/S step, rotate, attack, wait, end turn (Blade + egui).
-- **Dual target** — native + WASM (assets embedded via `include_dir` + Blade VFS; WASM uses Blade's WebGL2 backend). Pinned to Blade `e3c7dd68` (#381: shadow FS + wasm32 GLES profile; includes #378/#379 buffer-class and canvas color-space fixes).
+- **HUD** — view switcher, N/W/E/S step, rotate, attack, wait, end turn (Blade + egui). Web also has an HTML view strip so Pages stays playable if the in-canvas panel fails to composite.
+- **Dual target** — native + WASM (assets embedded via `include_dir` + Blade VFS; WASM uses Blade's WebGL2 backend). Pinned to Blade `2348c936` (#380 texelFetch present so the canvas is not a decoded-sRGB dark frame; #381 shadow FS + wasm32 GLES profile; #378/#379 buffer-class and canvas color-space).
 
 See original design notes: https://github.com/kvark/ideas/blob/master/game/eva.md
 
@@ -68,6 +68,8 @@ bash scripts/build-web.sh
 
 GitHub Pages (`.github/workflows/pages.yml`) builds that WASM and deploys on push to `main`.
 
+Open `?view=battle`, `?view=surface`, or `?view=underground` to pick the starting camera. The top-left strip does the same at runtime.
+
 ## Controls
 
 | Input | Action |
@@ -92,3 +94,13 @@ GitHub Pages (`.github/workflows/pages.yml`) builds that WASM and deploys on pus
 - Few-unit close-up mech combat with limb/zonal damage + pilot disobedience risk
 - Pilot–mech sync + interpersonal loyalty systems
 - XCOM-like facilities, research, hangars under the city
+
+## Roadmap (from the design notes)
+
+Priority tags from [eva.md](https://github.com/kvark/ideas/blob/master/game/eva.md):
+
+- **(high) GUI** — battle HUD, view switch, log. In-canvas egui plus HTML chrome on wasm.
+- **(med) City** — one large detailed block; living + destructible still ahead.
+- **(low–med) Battle** — skirmish + Quaternius clips are in; aliens / more animation still ahead.
+- **(low–med) Characters** — pilots carry sync/loyalty/stress; portraits and dialogs still ahead.
+- **(low) Base** — underground hangar is a stage, not a facility sandbox yet.
