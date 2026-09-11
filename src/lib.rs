@@ -535,11 +535,26 @@ impl Game {
                             .mech(target_id)
                             .map(|m| render::cell_to_world(m.position))
                             .unwrap_or(from + glam::Vec3::X);
-                        self.arena
-                            .play_attack(&mut self.engine, attacker_id, to - from);
-                        self.arena.play_hit(&mut self.engine, target_id);
-                        self.impact_timer = 0.85;
-                        self.enemy_step_timer = 0.85;
+                        let profile = self
+                            .mission
+                            .mech(attacker_id)
+                            .map(render::AttackAnim::for_mech)
+                            .unwrap_or(render::AttackAnim {
+                                telegraph: 0.22,
+                                strike: 0.55,
+                                lunge: 0.55,
+                                anim_speed: 1.15,
+                                hit_duration: 0.48,
+                            });
+                        let total = self.arena.play_attack(
+                            &mut self.engine,
+                            attacker_id,
+                            to - from,
+                            profile,
+                            Some(target_id),
+                        );
+                        self.impact_timer = total.max(0.85);
+                        self.enemy_step_timer = (total + 0.12).max(0.5);
                     }
                     Some(Action::Move { .. }) => {
                         self.enemy_step_timer = 0.38;
@@ -642,11 +657,29 @@ impl Game {
                     limb,
                 }) {
                     Ok(()) => {
+                        let profile = self
+                            .mission
+                            .mech(attacker)
+                            .map(render::AttackAnim::for_mech)
+                            .unwrap_or(render::AttackAnim {
+                                telegraph: 0.22,
+                                strike: 0.55,
+                                lunge: 0.55,
+                                anim_speed: 1.15,
+                                hit_duration: 0.48,
+                            });
                         if let (Some(f), Some(t)) = (from, to) {
-                            self.arena.play_attack(&mut self.engine, attacker, t - f);
+                            let total = self.arena.play_attack(
+                                &mut self.engine,
+                                attacker,
+                                t - f,
+                                profile,
+                                Some(target),
+                            );
+                            self.impact_timer = total.max(1.0);
+                        } else {
+                            self.impact_timer = profile.total().max(1.0);
                         }
-                        self.arena.play_hit(&mut self.engine, target);
-                        self.impact_timer = 1.15;
                     }
                     Err(e) => {
                         self.mission.log.push(format!("Attack failed: {e}"));
