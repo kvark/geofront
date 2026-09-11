@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Re-sync Blade shaders from blade-render/code at the Cargo.toml rev.
+# Note: geofront patches raster.wgsl sky to Tokyo-3 twilight — re-apply that
+# gradient after a sync (search for "Tokyo-3 twilight" in raster.wgsl).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REV="c2f670d876f7ce6725897ff18a6f0ac2b5688f76"

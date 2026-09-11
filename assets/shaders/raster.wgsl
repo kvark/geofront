@@ -375,10 +375,15 @@ fn raster_sky_fs(input: SkyOutput) -> @location(0) vec4<f32> {
                 color = color + tint2 * b2;
             }
         } else {
+            // Tokyo-3 twilight (pre-Reinhard): warm sodium horizon, purple
+            // haze, deep cool zenith. Geofront-local mood; re-apply after
+            // scripts/fetch-shaders.sh if Blade tip resets the gradient.
             let t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
-            let horizon = vec3<f32>(0.6, 0.7, 0.9);
-            let zenith = vec3<f32>(0.2, 0.35, 0.6);
-            color = mix(horizon, zenith, t);
+            let horizon = vec3<f32>(1.8, 0.48, 0.12);
+            let haze = vec3<f32>(0.42, 0.22, 0.7);
+            let zenith = vec3<f32>(0.015, 0.03, 0.12);
+            let low = mix(horizon, haze, smoothstep(0.0, 0.4, t));
+            color = mix(low, zenith, smoothstep(0.15, 1.0, t));
         }
     }
     let mapped = color / (color + vec3<f32>(1.0));

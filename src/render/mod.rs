@@ -142,12 +142,9 @@ impl Arena {
         match mode {
             ViewMode::Battle | ViewMode::CitySurface => {
                 stage_handles.extend(spawn_surface_roads(engine, 8, 8));
-                stage_handles.extend(spawn_surface_buildings(
-                    engine,
-                    8,
-                    8,
-                    mode == ViewMode::CitySurface,
-                ));
+                // Battle needs the denser skyscraper canyon; surface overview
+                // uses the same packing so screenshots match the Eva mood.
+                stage_handles.extend(spawn_surface_buildings(engine, 8, 8, true));
                 if mode == ViewMode::Battle {
                     for mech in &mission.mechs {
                         let vis = spawn_mech(engine, mech);
@@ -271,13 +268,13 @@ impl Arena {
                 }
             }
             ViewMode::CitySurface | ViewMode::Battle => {
-                // 2×2 fixtures leave slots under MAX_LOCAL_LIGHTS=8 for punch
-                // flashes and wreck glows.
-                for z in [2i32, 6] {
-                    for x in [2i32, 6] {
-                        let p = cell_to_world(IVec2::new(x, z));
-                        push(&mut lights, [p.x, 3.4, p.z], [1.0, 0.92, 0.78], 70.0, 9.0);
-                    }
+                // Warm sodium street lamps. Cap at 5 so punch/telegraph/wreck
+                // flashes still fit under MAX_LOCAL_LIGHTS=8.
+                // Color is deep orange (not creamy white) for Tokyo-3 night.
+                let sodium = [1.0, 0.52, 0.16];
+                for (x, z) in [(1i32, 1), (1, 6), (6, 1), (6, 6), (3, 4)] {
+                    let p = cell_to_world(IVec2::new(x, z));
+                    push(&mut lights, [p.x, 2.6, p.z], sodium, 210.0, 12.5);
                 }
             }
         }
@@ -653,22 +650,29 @@ fn spawn_surface_buildings(
     height: i32,
     dense: bool,
 ) -> Vec<blade_engine::ObjectHandle> {
-    let commercial = [
+    // Prefer skyscrapers so the 8×8 street reads as a Tokyo-3 canyon.
+    // Buildings sit *outside* the fight grid (outer rings only) so the street
+    // stays clear and the low hero camera isn't buried in rim walls.
+    let skyscrapers = [
         "models/commercial/building-skyscraper-a.glb",
+        "models/commercial/building-skyscraper-b.glb",
         "models/commercial/building-skyscraper-c.glb",
+        "models/commercial/building-skyscraper-d.glb",
         "models/commercial/building-skyscraper-e.glb",
+    ];
+    let midrise = [
         "models/commercial/building-a.glb",
         "models/commercial/building-c.glb",
         "models/commercial/building-e.glb",
         "models/commercial/building-i.glb",
         "models/commercial/building-l.glb",
+        "models/commercial/building-n.glb",
     ];
     let industrial = [
         "models/industrial/building-a.glb",
         "models/industrial/building-d.glb",
         "models/industrial/building-h.glb",
         "models/industrial/chimney-large.glb",
-        "models/industrial/detail-tank.glb",
     ];
 
     let mut handles = Vec::new();
@@ -678,25 +682,46 @@ fn spawn_surface_buildings(
     for x in -margin..width + margin {
         for z in -margin..height + margin {
             let outer = x < 0 || z < 0 || x >= width || z >= height;
-            let edge = x == 0 || z == 0 || x == width - 1 || z == height - 1;
-            if !outer && !edge {
+            if !outer {
+                // Fight grid stays open street — canyon walls are outside.
                 continue;
             }
-            if !outer && !dense && (x + z) % 3 != 0 {
-                continue;
-            }
-            if dense && !outer && (x + z) % 2 != 0 {
-                continue;
-            }
-            let path = if outer && (i % 3 == 0) {
-                industrial[i % industrial.len()]
+            let ring = (-x)
+                .max(x - (width - 1))
+                .max((-z).max(z - (height - 1)));
+            // Camera approaches from the west (behind players); keep that side
+            // buffered. Pack N/S/E walls closer (ring 1) for canyon framing.
+            let west_approach = x < 0;
+            let place = if dense {
+                if west_approach {
+                    ring == 2 || ring == 3
+                } else {
+                    ring >= 1 && ring <= 3
+                }
             } else {
-                commercial[i % commercial.len()]
+                ring == 2 && (x + z) % 2 == 0
             };
-            let scale = if path.contains("skyscraper") {
-                if dense { 1.25 } else { 1.15 }
+            if !place {
+                continue;
+            }
+
+            let path = if ring >= 3 && (i % 4 == 0) {
+                industrial[i % industrial.len()]
+            } else if i % 6 == 0 {
+                midrise[i % midrise.len()]
             } else {
-                1.0
+                skyscrapers[i % skyscrapers.len()]
+            };
+
+            let scale = if path.contains("skyscraper") {
+                let base = if dense { 1.7 } else { 1.25 };
+                base + ((i % 4) as f32) * 0.2
+            } else if path.contains("chimney") {
+                1.4
+            } else if dense {
+                1.25
+            } else {
+                1.05
             };
             let pos = cell_to_world(IVec2::new(x, z));
             handles.push(add_static(
@@ -770,14 +795,14 @@ fn mech_scale(mech: &Mech) -> f32 {
 }
 
 fn mech_tint(mech: &Mech, pulse: f32) -> [f32; 4] {
-    // High gain: Quaternius armor albedo is inherently dark; under Blade's
-    // Reinhard tonemap + lavapipe we need a strong multiply so panels read.
+    // High gain + saturated team colors so mechs stay readable against the
+    // darker Tokyo-3 twilight (Quaternius albedo ~0.2–0.35 + Reinhard).
     match mech.alien {
-        Some(AlienKind::Mass) => [2.1 * pulse, 1.15, 0.95, 1.0],
-        Some(AlienKind::Splinter) => [1.5 * pulse, 1.35 * pulse, 2.2 * pulse, 1.0],
+        Some(AlienKind::Mass) => [2.45 * pulse, 1.05, 0.75, 1.0],
+        Some(AlienKind::Splinter) => [1.35 * pulse, 1.45 * pulse, 2.55 * pulse, 1.0],
         None => match mech.team {
-            Team::Player => [1.75 * pulse, 1.85 * pulse, 2.05 * pulse, 1.0],
-            Team::Enemy => [2.0 * pulse, 1.35, 1.15, 1.0],
+            Team::Player => [1.55 * pulse, 1.95 * pulse, 2.35 * pulse, 1.0],
+            Team::Enemy => [2.35 * pulse, 1.15, 0.95, 1.0],
         },
     }
 }
@@ -943,37 +968,44 @@ pub fn combat_camera(
         .map(|m| cell_to_world(m.position))
         .unwrap_or(Vec3::new(12.0, 0.0, 8.0));
 
-    let focus = (p + e) * 0.5 + Vec3::Y * 1.5;
+    let focus = (p + e) * 0.5 + Vec3::Y * 1.35;
     let along = (e - p).normalize_or_zero();
     let side = along.cross(Vec3::Y).normalize_or_zero();
 
     let k = (impact_t / 1.15).clamp(0.0, 1.0);
     let k = k * k;
 
-    let dist = 11.6 - k * 3.6;
-    let side_off = 6.4 - k * 2.0;
-    let height = 5.2 - k * 1.6;
-    let fov = 0.68 + k * 0.16;
+    // Over-the-shoulder street shot: stay inside the 8×8 so outer canyon
+    // walls frame the lane instead of clipping the lens.
+    let dist = 5.8 - k * 1.8;
+    let side_off = 3.2 - k * 0.9;
+    let height = 2.35 - k * 0.7;
+    let fov = 0.76 + k * 0.12;
 
     let eye = focus - along * dist + side * side_off + Vec3::Y * height;
-    frame_camera(eye, focus + Vec3::Y * (k * 0.4), fov)
+    // Look slightly above foot level so the shot reads more horizontal.
+    frame_camera(eye, focus + Vec3::Y * (0.55 + k * 0.35), fov)
 }
 
 /// Elevated city overview cameras — also used to seed FlyCam.
 pub fn city_camera(mode: ViewMode) -> blade_engine::FrameCamera {
     match mode {
         ViewMode::CitySurface => {
-            let eye = Vec3::new(-6.0, 18.0, -4.0);
-            let focus = Vec3::new(7.0, 2.0, 7.0);
-            frame_camera(eye, focus, 0.70)
+            // Street-canyon overview rather than high noon god-cam.
+            let eye = Vec3::new(-4.0, 11.0, -2.5);
+            let focus = Vec3::new(7.0, 3.5, 7.0);
+            frame_camera(eye, focus, 0.72)
         }
         ViewMode::CityUnderground => {
             let eye = Vec3::new(-18.0, 16.0, -16.0);
             let focus = Vec3::new(0.0, 1.5, 8.0);
             frame_camera(eye, focus, 0.78)
         }
-        ViewMode::Battle => FlyCam::from_eye_focus(Vec3::new(-2.0, 3.4, 9.0), Vec3::new(7.0, 1.5, 7.0))
-            .camera(),
+        ViewMode::Battle => FlyCam::from_eye_focus(
+            Vec3::new(-1.5, 3.2, 11.0),
+            Vec3::new(7.0, 1.6, 7.0),
+        )
+        .camera(),
     }
 }
 
