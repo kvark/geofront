@@ -238,33 +238,33 @@ impl Game {
             },
         );
 
+        // Tokyo-3 twilight: warm low sun vs cool ambient fill. Keep
+        // directional_shadows off under lavapipe (skinned mechs go black).
         engine.set_raster_config(blade_render::RasterConfig {
             clear_color: blade_graphics::TextureColor::OpaqueBlack,
+            // Low evening sun glancing across the street canyon.
             light_dir: mint::Vector3 {
-                x: 0.35,
-                y: 0.85,
-                z: 0.35,
-            },
-            // Quaternius mech albedo sits ~0.2–0.35 linear under lavapipe +
-            // Reinhard; the previous 2.6/0.16 pair left skinned mechs as
-            // near-black silhouettes once directional shadows kicked in.
-            light_color: mint::Vector3 {
-                x: 9.5,
-                y: 8.6,
-                z: 7.4,
-            },
-            ambient_color: mint::Vector3 {
                 x: 0.72,
-                y: 0.74,
-                z: 0.82,
+                y: 0.28,
+                z: 0.18,
+            },
+            // Warm sodium/dusk key — strong enough that Quaternius albedo
+            // (~0.2–0.35) stays readable under Reinhard without noonday gray.
+            light_color: mint::Vector3 {
+                x: 9.2,
+                y: 5.0,
+                z: 2.1,
+            },
+            // Cool twilight fill (keep low so sodium + dusk key read).
+            ambient_color: mint::Vector3 {
+                x: 0.09,
+                y: 0.11,
+                z: 0.24,
             },
             space_sky: false,
-            // blade#381 always attaches raster_shadow_fs so WebGL2 can link
-            // the depth pipeline. Same map on native and wasm.
-            // Lavapipe + skinned Quaternius meshes: enabling the directional
-            // shadow map turns mech albedo into black silhouettes (likely bad
-            // depth compares / self-shadow). Keep ambient+direct strong and
-            // skip the map until Blade hardens skinned shadow receivers.
+            // Lavapipe + skinned Quaternius: directional shadow map turns
+            // mech albedo into black silhouettes. Leave off until Blade
+            // hardens skinned shadow receivers.
             directional_shadows: None,
         });
 
