@@ -16,7 +16,7 @@ Hybrid of XCOM-style base management and *Into the Breach*-style focused mech co
 - **Presentation** — Quaternius skinned GLBs play Idle / Walk / Punch / Hit / Death via `Engine::set_animation`. Attacks use a telegraph wind-up then strike (Splinter snappy, Mass heavy); hit reactions are deferred to impact; death locks and freezes so wrecks stay down. Street lamps and hangar fixtures are raster point lights (cap reserved for charge + attack flashes). Move tiles and facing drawn on the ground. Close-up camera with impact framing.
 - **City** — Kenney surface block + Space Kit underground hangar (pieces abut on edges, no stacked floors).
 - **HUD** — view switcher, N/W/E/S step, rotate, attack, wait, end turn (Blade + egui). Web also has an HTML view strip so Pages stays playable if the in-canvas panel fails to composite.
-- **Dual target** — native + WASM (assets embedded via `include_dir` + Blade VFS; WASM uses Blade's WebGL2 backend). Pinned to Blade `2348c936` (#380 texelFetch present so the canvas is not a decoded-sRGB dark frame; #381 shadow FS + wasm32 GLES profile; #378/#379 buffer-class and canvas color-space).
+- **Dual target** — native + WASM (assets embedded via `include_dir` + Blade VFS; WASM uses Blade's WebGL2 backend). Pinned to Blade `c2f670d` (main tip) (#380 texelFetch present so the canvas is not a decoded-sRGB dark frame; #381 shadow FS + wasm32 GLES profile; #378/#379 buffer-class and canvas color-space).
 
 See original design notes: https://github.com/kvark/ideas/blob/master/game/eva.md
 
@@ -97,7 +97,7 @@ Open `?view=battle`, `?view=surface`, or `?view=underground` to pick the startin
 ## Assets
 
 - Kenney city kits (CC0) under `assets/models/{roads,commercial,industrial,space}`
-- Quaternius Animated Mech Pack (CC0) as textured GLB under `assets/models/mechs/` (Stan, Mike, George, Leela; albedo embedded from pack Textures/)
+- Quaternius Animated Mech Pack (CC0) under `assets/models/mechs/` (Stan, Mike, George, Leela GLBs + external albedo PNGs; metalness 0, mild shadow-lift for lavapipe raster)
 
 ## Core pillars
 

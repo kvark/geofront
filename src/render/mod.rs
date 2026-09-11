@@ -129,6 +129,8 @@ pub struct Arena {
     visuals: HashMap<u32, MechVisual>,
     stage_handles: Vec<blade_engine::ObjectHandle>,
     pending_hits: Vec<PendingHit>,
+    /// Persistent local-light handles (Blade tip uses handle-based LocalLight).
+    light_handles: Vec<blade_engine::LightHandle>,
 }
 
 impl Arena {
@@ -163,6 +165,7 @@ impl Arena {
             visuals,
             stage_handles,
             pending_hits: Vec::new(),
+            light_handles: Vec::new(),
         }
     }
 
@@ -174,6 +177,9 @@ impl Arena {
         self.pending_hits.clear();
         for h in self.stage_handles.drain(..) {
             engine.remove_object(h);
+        }
+        for h in self.light_handles.drain(..) {
+            engine.remove_light(h);
         }
     }
 
@@ -228,16 +234,26 @@ impl Arena {
     }
 
     /// Street lamps / hangar fixtures + a brief impact flash.
-    pub fn sync_lights(&self, engine: &mut blade_engine::Engine, mission: &Mission) {
-        let mut lights: Vec<blade_render::PointLight> = Vec::new();
-        let push = |lights: &mut Vec<blade_render::PointLight>, pos: [f32; 3], color: [f32; 3], radius: f32| {
-            if lights.len() >= blade_render::MAX_POINT_LIGHTS {
+    ///
+    /// Blade tip keeps local lights as handle-owned `LocalLight` entries
+    /// (color is unit RGB, intensity is radiant peak). We rebuild the set
+    /// each frame so punch/telegraph flashes stay in sync with anims.
+    pub fn sync_lights(&mut self, engine: &mut blade_engine::Engine, mission: &Mission) {
+        let mut lights: Vec<blade_render::LocalLight> = Vec::new();
+        let push = |lights: &mut Vec<blade_render::LocalLight>,
+                    pos: [f32; 3],
+                    color: [f32; 3],
+                    intensity: f32,
+                    range: f32| {
+            if lights.len() >= blade_render::MAX_LOCAL_LIGHTS {
                 return;
             }
-            lights.push(blade_render::PointLight {
+            lights.push(blade_render::LocalLight {
                 position: pos.into(),
                 color: color.into(),
-                radius,
+                intensity,
+                range,
+                angular: blade_render::LightAngularProfile::Omnidirectional,
             });
         };
 
@@ -251,16 +267,16 @@ impl Arena {
                     [-20.0, 3.0, 0.0],
                     [0.0, 2.4, -10.0],
                 ] {
-                    push(&mut lights, pos, [4.2, 3.1, 1.8], 14.0);
+                    push(&mut lights, pos, [1.0, 0.82, 0.55], 55.0, 14.0);
                 }
             }
             ViewMode::CitySurface | ViewMode::Battle => {
-                // 2×2 fixtures leave slots under MAX_POINT_LIGHTS=8 for punch
+                // 2×2 fixtures leave slots under MAX_LOCAL_LIGHTS=8 for punch
                 // flashes and wreck glows.
                 for z in [2i32, 6] {
                     for x in [2i32, 6] {
                         let p = cell_to_world(IVec2::new(x, z));
-                        push(&mut lights, [p.x, 3.4, p.z], [3.4, 3.1, 2.4], 7.5);
+                        push(&mut lights, [p.x, 3.4, p.z], [1.0, 0.92, 0.78], 70.0, 9.0);
                     }
                 }
             }
@@ -274,7 +290,8 @@ impl Arena {
                     push(
                         &mut lights,
                         flash.into(),
-                        [18.0 * k, 8.0 * k, 2.5 * k],
+                        [1.0, 0.55, 0.18],
+                        220.0 * k,
                         6.0,
                     );
                 }
@@ -288,7 +305,8 @@ impl Arena {
                     push(
                         &mut lights,
                         glow.into(),
-                        [6.0 * build, 3.5 * build, 14.0 * build],
+                        [0.45, 0.35, 1.0],
+                        90.0 * build,
                         5.0,
                     );
                 }
@@ -296,12 +314,24 @@ impl Arena {
             for mech in &mission.mechs {
                 if mech.destroyed {
                     let p = cell_to_world(mech.position);
-                    push(&mut lights, [p.x, 0.6, p.z], [1.6, 0.35, 0.12], 4.0);
+                    push(&mut lights, [p.x, 0.6, p.z], [1.0, 0.28, 0.1], 18.0, 4.0);
                 }
             }
         }
 
-        engine.set_point_lights(&lights);
+        // Reuse handles when the count is stable; otherwise recreate.
+        if self.light_handles.len() == lights.len() {
+            for (handle, light) in self.light_handles.iter().zip(lights.iter()) {
+                engine.set_light(*handle, *light);
+            }
+        } else {
+            for h in self.light_handles.drain(..) {
+                engine.remove_light(h);
+            }
+            for light in lights {
+                self.light_handles.push(engine.add_light(light));
+            }
+        }
     }
 
     /// Lerp mechs toward grid cells, bob while walking, telegraph lean + lunge on attack.
@@ -740,12 +770,14 @@ fn mech_scale(mech: &Mech) -> f32 {
 }
 
 fn mech_tint(mech: &Mech, pulse: f32) -> [f32; 4] {
+    // High gain: Quaternius armor albedo is inherently dark; under Blade's
+    // Reinhard tonemap + lavapipe we need a strong multiply so panels read.
     match mech.alien {
-        Some(AlienKind::Mass) => [1.45 * pulse, 0.28, 0.22, 1.0],
-        Some(AlienKind::Splinter) => [0.75 * pulse, 0.55 * pulse, 1.45 * pulse, 1.0],
+        Some(AlienKind::Mass) => [2.1 * pulse, 1.15, 0.95, 1.0],
+        Some(AlienKind::Splinter) => [1.5 * pulse, 1.35 * pulse, 2.2 * pulse, 1.0],
         None => match mech.team {
-            Team::Player => [0.85 * pulse, 1.05 * pulse, 1.35 * pulse, 1.0],
-            Team::Enemy => [1.35 * pulse, 0.55, 0.45, 1.0],
+            Team::Player => [1.75 * pulse, 1.85 * pulse, 2.05 * pulse, 1.0],
+            Team::Enemy => [2.0 * pulse, 1.35, 1.15, 1.0],
         },
     }
 }
