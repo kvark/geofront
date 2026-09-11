@@ -41,6 +41,17 @@ Headless combat smoke test (no GPU / shaders required):
 cargo run -- --smoke
 ```
 
+Lavapipe playtest (software Vulkan + Xvfb):
+
+```bash
+export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
+export LIBGL_ALWAYS_SOFTWARE=1
+GEOFRONT_VIEW=battle GEOFRONT_AUTOPLAY=1 GEOFRONT_QUIT_AFTER=90 cargo run --release
+```
+
+`GEOFRONT_AUTOPLAY=1` scripts a skirmish to VICTORY/DEFEAT for headless iteration.
+
+
 Optional ray-traced lighting (needs RT hardware + RT shaders):
 
 ```bash
@@ -86,7 +97,7 @@ Open `?view=battle`, `?view=surface`, or `?view=underground` to pick the startin
 ## Assets
 
 - Kenney city kits (CC0) under `assets/models/{roads,commercial,industrial,space}`
-- Quaternius Animated Mech Pack (CC0) as GLB under `assets/models/mechs/` (Stan, Mike, George, Leela)
+- Quaternius Animated Mech Pack (CC0) as textured GLB under `assets/models/mechs/` (Stan, Mike, George, Leela; albedo embedded from pack Textures/)
 
 ## Core pillars
 

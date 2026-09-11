@@ -17,10 +17,10 @@ name = "geofront"
 path = "src/main.rs"
 
 [dependencies]
-blade-engine = { git = "https://github.com/kvark/blade", rev = "2348c9360dcc216390317af49db715047d8af536" }
-blade-graphics = { git = "https://github.com/kvark/blade", rev = "2348c9360dcc216390317af49db715047d8af536" }
-blade-particle = { git = "https://github.com/kvark/blade", rev = "2348c9360dcc216390317af49db715047d8af536" }
-blade-render = { git = "https://github.com/kvark/blade", rev = "2348c9360dcc216390317af49db715047d8af536" }
+blade-engine = { git = "https://github.com/kvark/blade", rev = "f456bc781c58bb343c0aa5b3a1f82f8db87ad59e" }
+blade-graphics = { git = "https://github.com/kvark/blade", rev = "f456bc781c58bb343c0aa5b3a1f82f8db87ad59e" }
+blade-particle = { git = "https://github.com/kvark/blade", rev = "f456bc781c58bb343c0aa5b3a1f82f8db87ad59e" }
+blade-render = { git = "https://github.com/kvark/blade", rev = "f456bc781c58bb343c0aa5b3a1f82f8db87ad59e" }
 egui = "0.34"
 egui-winit = { version = "0.34", default-features = false, features = ["links"] }
 glam = { version = "0.30", features = ["mint"] }
@@ -63,3 +63,4 @@ unused_qualifications = "warn"
 pattern_type_mismatch = "warn"
 new_without_default = "allow"
 needless_borrowed_reference = "allow"
+

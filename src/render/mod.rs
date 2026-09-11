@@ -335,6 +335,8 @@ impl Arena {
             let Some(vis) = self.visuals.get_mut(&mech.id) else {
                 continue;
             };
+            // Bind skinned clips once GLB cooks finish (safe to call every frame).
+            engine.ensure_animation_models(vis.handle);
             // Wrecks stay on the tile — a slight slump, not a fall-through.
             let target = if mech.destroyed {
                 cell_to_world(mech.position) + Vec3::Y * -0.18
@@ -850,7 +852,9 @@ fn spawn_mech(engine: &mut blade_engine::Engine, mech: &Mech) -> MechVisual {
         death_frozen: false,
         walk_index,
     };
-    set_clip(engine, &mut vis, MechClip::Idle, true);
+    // Defer Idle bind until after `Engine::update` flushes GLB cooks; binding here
+    // races cooking and leaves animation_model unset (permanent T-pose).
+    // `clip: Hit` forces the first tick's set_clip to apply Idle.
     vis
 }
 

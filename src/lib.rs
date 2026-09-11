@@ -154,6 +154,13 @@ struct Game {
     started_at: time::Instant,
     /// Exit after this many seconds (GEOFRONT_QUIT_AFTER / GEOFRONT_SCREENSHOT).
     quit_after: Option<f32>,
+    /// When set, script a battle to victory for lavapipe playtests.
+    autoplay: bool,
+    /// Cooldown before the next autoplay action.
+    autoplay_wait: f32,
+    /// Seconds waited at start for asset cooks / first Idle bind.
+    autoplay_warmup: f32,
+    autoplay_done: bool,
 }
 
 impl Drop for Game {
@@ -298,6 +305,10 @@ impl Game {
             last_redraw: time::Instant::now(),
             started_at: time::Instant::now(),
             quit_after,
+            autoplay: std::env::var_os("GEOFRONT_AUTOPLAY").is_some(),
+            autoplay_wait: 0.0,
+            autoplay_warmup: 2.5,
+            autoplay_done: false,
         }
     }
 
@@ -570,6 +581,10 @@ impl Game {
             }
         }
 
+        if self.autoplay {
+            self.tick_autoplay(dt);
+        }
+
         self.fly.apply(dt, self.keys);
         self.keys.look_dx = 0.0;
         self.keys.look_dy = 0.0;
@@ -634,6 +649,88 @@ impl Game {
         #[cfg(target_arch = "wasm32")]
         self.publish_controls_probe();
         false
+    }
+
+
+    /// Scripted skirmish for lavapipe: warm up, attack, end turn, until VICTORY/DEFEAT.
+    fn tick_autoplay(&mut self, dt: f32) {
+        if self.view_mode != render::ViewMode::Battle {
+            self.handle_hud(ui::HudAction::SetView(render::ViewMode::Battle));
+            return;
+        }
+        if self.autoplay_warmup > 0.0 {
+            self.autoplay_warmup -= dt;
+            return;
+        }
+        if self.mission.is_won() || self.mission.is_lost() {
+            if !self.autoplay_done {
+                self.autoplay_done = true;
+                if self.mission.is_won() {
+                    info!("AUTOPLAY: VICTORY on turn {}", self.mission.turn);
+                } else {
+                    info!("AUTOPLAY: DEFEAT on turn {}", self.mission.turn);
+                }
+                if self.quit_after.is_none() {
+                    self.quit_after = Some(self.started_at.elapsed().as_secs_f32() + 2.0);
+                }
+            }
+            return;
+        }
+        if self.mission.phase != combat::TurnPhase::Player {
+            return;
+        }
+        if self.autoplay_wait > 0.0 {
+            self.autoplay_wait -= dt;
+            return;
+        }
+
+        // Prefer attacking with the selected living player; otherwise any living player.
+        let attacker = self
+            .mission
+            .mech(self.selected_player)
+            .filter(|m| !m.destroyed && matches!(m.team, units::Team::Player) && m.can_act())
+            .map(|m| m.id)
+            .or_else(|| {
+                self.mission
+                    .living_mechs(units::Team::Player)
+                    .find(|m| m.can_act())
+                    .map(|m| m.id)
+            });
+
+        if let Some(aid) = attacker {
+            self.selected_player = aid;
+            let from = self.mission.mech(aid).map(|m| m.position).unwrap();
+            let target = self
+                .mission
+                .living_mechs(units::Team::Enemy)
+                .min_by_key(|e| combat::Grid::manhattan(from, e.position))
+                .map(|e| e.id);
+            if let Some(tid) = target {
+                self.selected_enemy = tid;
+                let in_range = {
+                    let a = self.mission.mech(aid).unwrap();
+                    let e = self.mission.mech(tid).unwrap();
+                    combat::Grid::manhattan(a.position, e.position) <= a.attack_range()
+                };
+                if in_range {
+                    self.handle_hud(ui::HudAction::Attack {
+                        attacker: aid,
+                        target: tid,
+                        limb: LimbKind::Torso,
+                    });
+                    self.autoplay_wait = 1.35;
+                    return;
+                }
+            }
+            // No shot available for this unit — mark acted via Wait.
+            self.handle_hud(ui::HudAction::Wait);
+            self.autoplay_wait = 0.35;
+            return;
+        }
+
+        // Everyone acted (or cannot) — end the player phase.
+        self.handle_hud(ui::HudAction::EndTurn);
+        self.autoplay_wait = 0.4;
     }
 
     fn handle_hud(&mut self, action: ui::HudAction) {

@@ -255,7 +255,6 @@ dependencies = [
 [[package]]
 name = "blade-asset"
 version = "0.2.1"
-source = "git+https://github.com/kvark/blade?rev=2f1a1dec4899640b0240559a21d1a6b379babee8#2f1a1dec4899640b0240559a21d1a6b379babee8"
 dependencies = [
  "base64",
  "bytemuck",
@@ -267,7 +266,6 @@ dependencies = [
 [[package]]
 name = "blade-egui"
 version = "0.8.1"
-source = "git+https://github.com/kvark/blade?rev=2f1a1dec4899640b0240559a21d1a6b379babee8#2f1a1dec4899640b0240559a21d1a6b379babee8"
 dependencies = [
  "blade-graphics",
  "blade-macros",
@@ -280,13 +278,13 @@ dependencies = [
 [[package]]
 name = "blade-engine"
 version = "0.1.0"
-source = "git+https://github.com/kvark/blade?rev=2f1a1dec4899640b0240559a21d1a6b379babee8#2f1a1dec4899640b0240559a21d1a6b379babee8"
 dependencies = [
  "base64",
  "blade-asset",
  "blade-egui",
  "blade-graphics",
  "blade-helpers",
+ "blade-macros",
  "blade-particle",
  "blade-render",
  "choir",
@@ -310,7 +308,6 @@ dependencies = [
 [[package]]
 name = "blade-graphics"
 version = "0.8.4"
-source = "git+https://github.com/kvark/blade?rev=2f1a1dec4899640b0240559a21d1a6b379babee8#2f1a1dec4899640b0240559a21d1a6b379babee8"
 dependencies = [
  "ash",
  "ash-window",
@@ -346,7 +343,6 @@ dependencies = [
 [[package]]
 name = "blade-helpers"
 version = "0.2.0"
-source = "git+https://github.com/kvark/blade?rev=2f1a1dec4899640b0240559a21d1a6b379babee8#2f1a1dec4899640b0240559a21d1a6b379babee8"
 dependencies = [
  "blade-graphics",
  "blade-render",
@@ -360,7 +356,6 @@ dependencies = [
 [[package]]
 name = "blade-macros"
 version = "0.3.0"
-source = "git+https://github.com/kvark/blade?rev=2f1a1dec4899640b0240559a21d1a6b379babee8#2f1a1dec4899640b0240559a21d1a6b379babee8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -370,7 +365,6 @@ dependencies = [
 [[package]]
 name = "blade-particle"
 version = "0.1.0"
-source = "git+https://github.com/kvark/blade?rev=2f1a1dec4899640b0240559a21d1a6b379babee8#2f1a1dec4899640b0240559a21d1a6b379babee8"
 dependencies = [
  "blade-graphics",
  "blade-macros",
@@ -382,7 +376,6 @@ dependencies = [
 [[package]]
 name = "blade-render"
 version = "0.5.0"
-source = "git+https://github.com/kvark/blade?rev=2f1a1dec4899640b0240559a21d1a6b379babee8#2f1a1dec4899640b0240559a21d1a6b379babee8"
 dependencies = [
  "base64",
  "bevy_mikktspace",
@@ -412,7 +405,6 @@ dependencies = [
 [[package]]
 name = "blade-util"
 version = "0.4.1"
-source = "git+https://github.com/kvark/blade?rev=2f1a1dec4899640b0240559a21d1a6b379babee8#2f1a1dec4899640b0240559a21d1a6b379babee8"
 dependencies = [
  "blade-graphics",
  "bytemuck",
@@ -1750,7 +1742,7 @@ dependencies = [
 [[package]]
 name = "naga"
 version = "29.0.0"
-source = "git+https://github.com/gfx-rs/wgpu?rev=78b4dfd0cb1ef5ed208fefe80ae2f855db3609bb#78b4dfd0cb1ef5ed208fefe80ae2f855db3609bb"
+source = "git+https://github.com/gfx-rs/wgpu?rev=cefd48f6cff61d64abe1cdb4002c4e39bfc2c728#cefd48f6cff61d64abe1cdb4002c4e39bfc2c728"
 dependencies = [
  "arrayvec",
  "bit-set",
