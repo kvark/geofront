@@ -7,7 +7,7 @@ use glam::{IVec2, Mat4, Quat, Vec3};
 use log::info;
 
 use crate::combat::Mission;
-use crate::units::{Facing, Mech, Team};
+use crate::units::{AlienKind, Facing, Mech, Team};
 
 /// World units per tactical grid cell (matches Kenney road tile width).
 pub const CELL: f32 = 2.0;
@@ -281,10 +281,7 @@ impl Arena {
             } else {
                 1.0
             };
-            let tint = match mech.team {
-                Team::Player => [0.85 * pulse, 1.05 * pulse, 1.35 * pulse, 1.0],
-                Team::Enemy => [1.35 * pulse, 0.55, 0.45, 1.0],
-            };
+            let tint = mech_tint(mech, pulse);
             engine.set_color_tint(vis.handle, tint);
 
             let want = if mech.destroyed {
@@ -546,11 +543,35 @@ fn spawn_underground_facility(engine: &mut blade_engine::Engine) -> Vec<blade_en
 }
 
 fn mech_glb_path(mech: &Mech) -> &'static str {
-    match (mech.team, mech.id % 2) {
-        (Team::Player, 0) => "models/mechs/Stan.glb",
-        (Team::Player, _) => "models/mechs/Mike.glb",
-        (Team::Enemy, 0) => "models/mechs/George.glb",
-        (Team::Enemy, _) => "models/mechs/Leela.glb",
+    match mech.alien {
+        Some(AlienKind::Mass) => "models/mechs/George.glb",
+        Some(AlienKind::Splinter) => "models/mechs/Leela.glb",
+        None => match (mech.team, mech.id % 2) {
+            (Team::Player, 0) => "models/mechs/Stan.glb",
+            (Team::Player, _) => "models/mechs/Mike.glb",
+            (Team::Enemy, 0) => "models/mechs/George.glb",
+            (Team::Enemy, _) => "models/mechs/Leela.glb",
+        },
+    }
+}
+
+fn mech_scale(mech: &Mech) -> f32 {
+    // Quaternius pack is authored at ~7m; 0.4 puts player feet on a 2-unit cell.
+    match mech.alien {
+        Some(AlienKind::Mass) => 0.55,
+        Some(AlienKind::Splinter) => 0.32,
+        None => 0.4,
+    }
+}
+
+fn mech_tint(mech: &Mech, pulse: f32) -> [f32; 4] {
+    match mech.alien {
+        Some(AlienKind::Mass) => [1.45 * pulse, 0.28, 0.22, 1.0],
+        Some(AlienKind::Splinter) => [0.75 * pulse, 0.55 * pulse, 1.45 * pulse, 1.0],
+        None => match mech.team {
+            Team::Player => [0.85 * pulse, 1.05 * pulse, 1.35 * pulse, 1.0],
+            Team::Enemy => [1.35 * pulse, 0.55, 0.45, 1.0],
+        },
     }
 }
 
@@ -584,8 +605,7 @@ fn set_clip(
 
 fn spawn_mech(engine: &mut blade_engine::Engine, mech: &Mech) -> MechVisual {
     let path = mech_glb_path(mech);
-    // Quaternius pack is authored at ~7m; 0.4 puts feet on a 2-unit cell.
-    const SCALE: f32 = 0.4;
+    let scale = mech_scale(mech);
     let pos = cell_to_world(mech.position);
     let yaw = mech.facing.yaw();
     let q = Quat::from_rotation_y(yaw);
@@ -594,7 +614,7 @@ fn spawn_mech(engine: &mut blade_engine::Engine, mech: &Mech) -> MechVisual {
             name: mech.name.clone(),
             visuals: vec![blade_engine::config::Visual {
                 model: path.into(),
-                scale: SCALE,
+                scale,
                 pos: [0.0; 3].into(),
                 rot: [0.0; 3].into(),
                 front_face: blade_engine::config::FrontFace::default(),

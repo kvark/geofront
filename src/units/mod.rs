@@ -1,4 +1,4 @@
-//! Mechs (limb components, damage, equipment) and pilots.
+//! Mechs (limb components, damage, equipment), aliens, and pilots.
 
 use glam::IVec2;
 
@@ -125,6 +125,24 @@ pub enum Team {
     Enemy,
 }
 
+/// Alien combat archetypes. Placeholder visuals; distinct stats + AI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlienKind {
+    /// Fragile harasser: kites, chips limbs at long range.
+    Splinter,
+    /// Slow pressure: closes and smashes at short range.
+    Mass,
+}
+
+impl AlienKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            AlienKind::Splinter => "Splinter",
+            AlienKind::Mass => "Mass",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Mech {
     pub id: u32,
@@ -139,6 +157,8 @@ pub struct Mech {
     pub move_left: i32,
     /// Attack or Wait already spent this turn.
     pub acted: bool,
+    /// `Some` for alien enemies; player mechs stay `None`.
+    pub alien: Option<AlienKind>,
 }
 
 impl Mech {
@@ -160,11 +180,13 @@ impl Mech {
             destroyed: false,
             move_left: 0,
             acted: false,
+            alien: None,
         };
         m.refresh_turn();
         m
     }
 
+    /// Generic enemy mech (legacy). Prefer [`Self::new_alien`].
     pub fn new_enemy(id: u32, name: impl Into<String>, pos: IVec2) -> Self {
         let mut m = Self {
             id,
@@ -183,6 +205,47 @@ impl Mech {
             destroyed: false,
             move_left: 0,
             acted: false,
+            alien: None,
+        };
+        m.refresh_turn();
+        m
+    }
+
+    pub fn new_alien(id: u32, kind: AlienKind, pos: IVec2) -> Self {
+        let (limbs, facing) = match kind {
+            AlienKind::Splinter => (
+                vec![
+                    Limb::new(LimbKind::Torso, 55.0),
+                    Limb::new(LimbKind::LeftArm, 50.0),
+                    Limb::new(LimbKind::RightArm, 50.0),
+                    Limb::new(LimbKind::LeftLeg, 55.0),
+                    Limb::new(LimbKind::RightLeg, 55.0),
+                ],
+                Facing::West,
+            ),
+            AlienKind::Mass => (
+                vec![
+                    Limb::new(LimbKind::Torso, 120.0),
+                    Limb::new(LimbKind::LeftArm, 25.0),
+                    Limb::new(LimbKind::RightArm, 25.0),
+                    Limb::new(LimbKind::LeftLeg, 70.0),
+                    Limb::new(LimbKind::RightLeg, 70.0),
+                ],
+                Facing::West,
+            ),
+        };
+        let mut m = Self {
+            id,
+            name: kind.label().into(),
+            team: Team::Enemy,
+            position: pos,
+            facing,
+            limbs,
+            pilot_id: None,
+            destroyed: false,
+            move_left: 0,
+            acted: false,
+            alien: Some(kind),
         };
         m.refresh_turn();
         m
@@ -194,7 +257,12 @@ impl Mech {
             self.acted = true;
             return;
         }
-        self.move_left = (2.0 * self.mobility()).ceil() as i32;
+        let mult = match self.alien {
+            Some(AlienKind::Splinter) => 3.0,
+            Some(AlienKind::Mass) => 1.0,
+            None => 2.0,
+        };
+        self.move_left = (mult * self.mobility()).ceil() as i32;
         self.move_left = self.move_left.max(1);
         self.acted = false;
     }
@@ -254,9 +322,21 @@ impl Mech {
 
     pub fn attack_range(&self) -> i32 {
         if self.firepower() <= 0.05 {
-            1
-        } else {
-            4
+            return 1;
+        }
+        match self.alien {
+            Some(AlienKind::Splinter) => 5,
+            Some(AlienKind::Mass) => 2,
+            None => 4,
+        }
+    }
+
+    /// Preferred limb when this unit attacks (aliens differ).
+    pub fn preferred_attack_limb(&self) -> LimbKind {
+        match self.alien {
+            Some(AlienKind::Splinter) => LimbKind::LeftArm,
+            Some(AlienKind::Mass) => LimbKind::Torso,
+            None => LimbKind::Torso,
         }
     }
 }

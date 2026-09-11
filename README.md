@@ -12,7 +12,7 @@ Hybrid of XCOM-style base management and *Into the Breach*-style focused mech co
 
 ## Status
 
-- **Combat** — turn-based skirmish on an 8×8 street grid. Each unit gets move points (orthogonal steps) then one action (attack / wait). Facing, limb targeting, mobility/firepower from limbs, sequential enemy phase.
+- **Combat** — turn-based skirmish on an 8×8 street grid. Each unit gets move points (orthogonal steps) then one action (attack / wait). Facing, limb targeting, mobility/firepower from limbs, sequential enemy phase. Alien archetypes: **Splinter** (kite/harass, range 5) and **Mass** (slow pressure, range 2); placeholder Quaternius meshes with distinct scale/tint until real alien art.
 - **Presentation** — Quaternius skinned GLBs play Idle / Walk / Punch / Hit / Death via `Engine::set_animation`. Street lamps and hangar fixtures are raster point lights (cap reserved for attack flashes). Move tiles and facing drawn on the ground. Close-up camera with impact framing.
 - **City** — Kenney surface block + Space Kit underground hangar (pieces abut on edges, no stacked floors).
 - **HUD** — view switcher, N/W/E/S step, rotate, attack, wait, end turn (Blade + egui). Web also has an HTML view strip so Pages stays playable if the in-canvas panel fails to composite.
@@ -101,6 +101,6 @@ Priority tags from [eva.md](https://github.com/kvark/ideas/blob/master/game/eva.
 
 - **(high) GUI** — battle HUD, view switch, log. In-canvas egui plus HTML chrome on wasm.
 - **(med) City** — one large detailed block; living + destructible still ahead.
-- **(low–med) Battle** — skirmish + Quaternius clips are in; aliens / more animation still ahead.
+- **(low–med) Battle** — skirmish + Quaternius clips + Splinter/Mass alien AI are in; more alien art / animation still ahead.
 - **(low–med) Characters** — pilots carry sync/loyalty/stress; portraits and dialogs still ahead.
 - **(low) Base** — underground hangar is a stage, not a facility sandbox yet.

@@ -1,7 +1,7 @@
 //! Turn manager, actions, telegraphs (optional), external support requests.
 
 use glam::IVec2;
-use crate::units::{Facing, LimbKind, Mech, Pilot, Team};
+use crate::units::{AlienKind, Facing, LimbKind, Mech, Pilot, Team};
 
 #[derive(Debug)]
 pub struct Grid {
@@ -54,13 +54,13 @@ pub struct Mission {
 impl Mission {
     pub fn new_skirmish() -> Self {
         let grid = Grid::new(8, 8);
-        // Opening Manhattan distances are ≤ attack_range (4) so the first
-        // player volley and the smoke test can actually connect.
+        // Opening distances keep smoke/tests able to connect: Splinter (range 5)
+        // and Mass (range 2) sit on the east side facing player mechs.
         let mut mechs = vec![
             Mech::new_player(0, "Coil", IVec2::new(2, 3)),
             Mech::new_player(1, "Bastion", IVec2::new(2, 4)),
-            Mech::new_enemy(10, "Razor", IVec2::new(5, 3)),
-            Mech::new_enemy(11, "Husk", IVec2::new(5, 5)),
+            Mech::new_alien(10, AlienKind::Splinter, IVec2::new(5, 3)),
+            Mech::new_alien(11, AlienKind::Mass, IVec2::new(5, 5)),
         ];
         let pilots = vec![Pilot::new(0, "Nori"), Pilot::new(1, "Vesper")];
         mechs[0].pilot_id = Some(0);
@@ -286,6 +286,124 @@ impl Mission {
         }
     }
 
+    fn step_toward(&self, from: IVec2, to: IVec2, eid: u32) -> Option<IVec2> {
+        let dx = (to.x - from.x).signum();
+        let dy = (to.y - from.y).signum();
+        let candidates = if dx != 0 && dy != 0 {
+            [IVec2::new(from.x + dx, from.y), IVec2::new(from.x, from.y + dy)]
+        } else if dx != 0 {
+            [IVec2::new(from.x + dx, from.y), IVec2::new(from.x, from.y)]
+        } else {
+            [IVec2::new(from.x, from.y + dy), IVec2::new(from.x, from.y)]
+        };
+        for next in candidates {
+            if next != from && self.grid.in_bounds(next) && !self.occupied(next, Some(eid)) {
+                return Some(next);
+            }
+        }
+        None
+    }
+
+    fn step_away(&self, from: IVec2, threat: IVec2, eid: u32) -> Option<IVec2> {
+        let mut best: Option<(IVec2, i32)> = None;
+        for dir in [Facing::North, Facing::East, Facing::South, Facing::West] {
+            let next = from + dir.delta();
+            if !self.grid.in_bounds(next) || self.occupied(next, Some(eid)) {
+                continue;
+            }
+            let dist = Grid::manhattan(next, threat);
+            if best.map(|(_, d)| dist > d).unwrap_or(true) {
+                best = Some((next, dist));
+            }
+        }
+        best.map(|(p, _)| p)
+    }
+
+    fn plan_enemy_actions(
+        &self,
+        eid: u32,
+        mut epos: IVec2,
+        mut mp: i32,
+        range: i32,
+        kind: Option<AlienKind>,
+        tid: u32,
+        tpos: IVec2,
+    ) -> Vec<Action> {
+        let mut queue = Vec::new();
+        let limb = self
+            .mech(eid)
+            .map(|m| m.preferred_attack_limb())
+            .unwrap_or(LimbKind::Torso);
+
+        match kind {
+            Some(AlienKind::Splinter) => {
+                // Kite when pressed, otherwise hold the edge of range.
+                while mp > 0 {
+                    let dist = Grid::manhattan(epos, tpos);
+                    if dist <= 2 {
+                        if let Some(next) = self.step_away(epos, tpos, eid) {
+                            queue.push(Action::Move {
+                                unit_id: eid,
+                                to: next,
+                            });
+                            epos = next;
+                            mp -= 1;
+                            continue;
+                        }
+                    }
+                    if dist > range {
+                        if let Some(next) = self.step_toward(epos, tpos, eid) {
+                            queue.push(Action::Move {
+                                unit_id: eid,
+                                to: next,
+                            });
+                            epos = next;
+                            mp -= 1;
+                            continue;
+                        }
+                    }
+                    break;
+                }
+                let dist = Grid::manhattan(epos, tpos);
+                if dist <= range {
+                    queue.push(Action::Attack {
+                        attacker_id: eid,
+                        target_id: tid,
+                        limb,
+                    });
+                } else {
+                    queue.push(Action::Wait { unit_id: eid });
+                }
+            }
+            Some(AlienKind::Mass) | None => {
+                // Close and smash (generic enemies share Mass pressure).
+                while mp > 0 && Grid::manhattan(epos, tpos) > range {
+                    if let Some(next) = self.step_toward(epos, tpos, eid) {
+                        queue.push(Action::Move {
+                            unit_id: eid,
+                            to: next,
+                        });
+                        epos = next;
+                        mp -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                let dist = Grid::manhattan(epos, tpos);
+                if dist <= range {
+                    queue.push(Action::Attack {
+                        attacker_id: eid,
+                        target_id: tid,
+                        limb,
+                    });
+                } else {
+                    queue.push(Action::Wait { unit_id: eid });
+                }
+            }
+        }
+        queue
+    }
+
     /// Plan enemy moves into `enemy_queue`. Presentation plays them one by one.
     pub fn begin_enemy_turn(&mut self) {
         self.phase = TurnPhase::Enemy;
@@ -303,44 +421,29 @@ impl Mission {
         let enemy_ids: Vec<u32> = self.living_mechs(Team::Enemy).map(|m| m.id).collect();
         for eid in enemy_ids {
             let Some(enemy) = self.mech(eid) else { continue };
-            let mut epos = enemy.position;
-            let mut mp = enemy.move_left;
+            let epos = enemy.position;
+            let mp = enemy.move_left;
             let range = enemy.attack_range();
+            let kind = enemy.alien;
+            let name = enemy.name.clone();
             let (tid, tpos) = player_positions
                 .iter()
                 .min_by_key(|(_, p)| Grid::manhattan(epos, *p))
                 .copied()
                 .unwrap();
 
-            while mp > 0 && Grid::manhattan(epos, tpos) > range {
-                let dx = (tpos.x - epos.x).signum();
-                let dy = (tpos.y - epos.y).signum();
-                let next = if dx != 0 {
-                    IVec2::new(epos.x + dx, epos.y)
-                } else {
-                    IVec2::new(epos.x, epos.y + dy)
-                };
-                if !self.grid.in_bounds(next) || self.occupied(next, Some(eid)) {
-                    break;
+            match kind {
+                Some(AlienKind::Splinter) => {
+                    self.log.push(format!("{name} kites and harasses."));
                 }
-                self.enemy_queue.push(Action::Move {
-                    unit_id: eid,
-                    to: next,
-                });
-                epos = next;
-                mp -= 1;
+                Some(AlienKind::Mass) => {
+                    self.log.push(format!("{name} advances under pressure."));
+                }
+                None => {}
             }
 
-            let dist = Grid::manhattan(epos, tpos);
-            if dist <= range {
-                self.enemy_queue.push(Action::Attack {
-                    attacker_id: eid,
-                    target_id: tid,
-                    limb: LimbKind::Torso,
-                });
-            } else {
-                self.enemy_queue.push(Action::Wait { unit_id: eid });
-            }
+            let planned = self.plan_enemy_actions(eid, epos, mp, range, kind, tid, tpos);
+            self.enemy_queue.extend(planned);
         }
         self.log.push("Enemy phase.".into());
     }
@@ -496,5 +599,64 @@ mod tests {
         let mut m = Mission::new_skirmish();
         m.smoke_run(4);
         assert!(!m.log.is_empty());
+    }
+
+    #[test]
+    fn skirmish_spawns_alien_archetypes() {
+        let m = Mission::new_skirmish();
+        let splinter = m.mech(10).unwrap();
+        let mass = m.mech(11).unwrap();
+        assert_eq!(splinter.alien, Some(AlienKind::Splinter));
+        assert_eq!(mass.alien, Some(AlienKind::Mass));
+        assert_eq!(splinter.attack_range(), 5);
+        assert_eq!(mass.attack_range(), 2);
+    }
+
+    #[test]
+    fn splinter_kites_when_adjacent() {
+        let mut m = Mission::new_skirmish();
+        // Place Splinter next to Coil.
+        m.mech_mut(10).unwrap().position = IVec2::new(3, 3);
+        m.mech_mut(0).unwrap().position = IVec2::new(2, 3);
+        m.mech_mut(10).unwrap().refresh_turn();
+        m.begin_enemy_turn();
+        assert!(
+            m.log.iter().any(|l| l.contains("kites")),
+            "log: {:?}",
+            m.log
+        );
+        let first_move = m.enemy_queue.iter().find_map(|a| match a {
+            Action::Move { unit_id: 10, to } => Some(*to),
+            _ => None,
+        });
+        let to = first_move.expect("Splinter should queue a retreat step");
+        assert!(Grid::manhattan(to, IVec2::new(2, 3)) > 1);
+    }
+
+    #[test]
+    fn mass_closes_when_out_of_range() {
+        let mut m = Mission::new_skirmish();
+        // Mass far from nearest player, short range 2.
+        m.mech_mut(11).unwrap().position = IVec2::new(7, 7);
+        m.mech_mut(0).unwrap().position = IVec2::new(1, 1);
+        m.mech_mut(1).unwrap().position = IVec2::new(1, 2);
+        m.mech_mut(11).unwrap().refresh_turn();
+        m.begin_enemy_turn();
+        assert!(
+            m.log.iter().any(|l| l.contains("advances")),
+            "log: {:?}",
+            m.log
+        );
+        assert!(
+            m.enemy_queue.iter().any(|a| matches!(
+                a,
+                Action::Move {
+                    unit_id: 11,
+                    ..
+                }
+            )),
+            "queue: {:?}",
+            m.enemy_queue
+        );
     }
 }
