@@ -12,8 +12,52 @@ use crate::units::{AlienKind, Facing, Mech, Team};
 /// World units per tactical grid cell (matches Kenney road tile width).
 pub const CELL: f32 = 2.0;
 
-/// Punch clip + lunge + muzzle flash share one duration.
-const PUNCH_SECS: f32 = 0.55;
+/// Default player strike length when no profile is supplied.
+const DEFAULT_STRIKE_SECS: f32 = 0.55;
+
+/// Per-attacker wind-up + strike timing (aliens differ).
+#[derive(Debug, Clone, Copy)]
+pub struct AttackAnim {
+    pub telegraph: f32,
+    pub strike: f32,
+    pub lunge: f32,
+    pub anim_speed: f32,
+    pub hit_duration: f32,
+}
+
+impl AttackAnim {
+    pub fn for_mech(mech: &Mech) -> Self {
+        match mech.alien {
+            // Snappy poke: short wind-up, fast clip, longer lunge travel.
+            Some(AlienKind::Splinter) => Self {
+                telegraph: 0.12,
+                strike: 0.36,
+                lunge: 0.78,
+                anim_speed: 1.55,
+                hit_duration: 0.32,
+            },
+            // Heavy slam: long telegraph, slow punch, deep lunge.
+            Some(AlienKind::Mass) => Self {
+                telegraph: 0.45,
+                strike: 0.78,
+                lunge: 1.05,
+                anim_speed: 0.78,
+                hit_duration: 0.7,
+            },
+            None => Self {
+                telegraph: 0.22,
+                strike: DEFAULT_STRIKE_SECS,
+                lunge: 0.55,
+                anim_speed: 1.15,
+                hit_duration: 0.48,
+            },
+        }
+    }
+
+    pub fn total(self) -> f32 {
+        self.telegraph + self.strike
+    }
+}
 
 /// Map grid cell → world position (Y-up). Feet on the road / floor surface.
 pub fn cell_to_world(pos: IVec2) -> Vec3 {
@@ -54,18 +98,37 @@ struct MechVisual {
     pos: Vec3,
     yaw: f32,
     bob: f32,
+    /// Wind-up before the Punch clip / forward lunge.
+    telegraph: f32,
+    telegraph_duration: f32,
+    /// Remaining strike time (Punch clip + forward lunge).
     punch: f32,
+    punch_duration: f32,
+    lunge_amp: f32,
+    punch_anim_speed: f32,
     hit: f32,
     punch_dir: Vec3,
     clip: MechClip,
+    /// Once Death plays, never restart or leave it.
+    death_locked: bool,
+    /// Seconds since death lock; used to freeze the last pose.
+    death_age: f32,
+    death_frozen: bool,
     /// George inserts Tall clips, so Walk is 16 instead of 15.
     walk_index: usize,
+}
+
+struct PendingHit {
+    target_id: u32,
+    delay: f32,
+    duration: f32,
 }
 
 pub struct Arena {
     pub kind: ViewMode,
     visuals: HashMap<u32, MechVisual>,
     stage_handles: Vec<blade_engine::ObjectHandle>,
+    pending_hits: Vec<PendingHit>,
 }
 
 impl Arena {
@@ -99,6 +162,7 @@ impl Arena {
             kind: mode,
             visuals,
             stage_handles,
+            pending_hits: Vec::new(),
         }
     }
 
@@ -107,30 +171,58 @@ impl Arena {
             engine.remove_object(vis.handle);
         }
         self.visuals.clear();
+        self.pending_hits.clear();
         for h in self.stage_handles.drain(..) {
             engine.remove_object(h);
         }
     }
 
-    pub fn play_attack(&mut self, engine: &mut blade_engine::Engine, id: u32, toward: Vec3) {
+    /// Begin an attack with wind-up. Hit reaction is deferred until the strike lands.
+    /// Returns total presentation seconds (telegraph + strike) for timers.
+    pub fn play_attack(
+        &mut self,
+        engine: &mut blade_engine::Engine,
+        id: u32,
+        toward: Vec3,
+        profile: AttackAnim,
+        hit_target: Option<u32>,
+    ) -> f32 {
         if let Some(v) = self.visuals.get_mut(&id) {
-            v.punch = PUNCH_SECS;
+            if v.death_locked {
+                return 0.0;
+            }
             let dir = Vec3::new(toward.x, 0.0, toward.z);
             v.punch_dir = if dir.length_squared() > 1e-4 {
                 dir.normalize()
             } else {
                 Vec3::Z
             };
-            set_clip(engine, v, MechClip::Punch, false);
+            v.telegraph_duration = profile.telegraph.max(0.01);
+            v.telegraph = profile.telegraph;
+            v.punch_duration = profile.strike.max(0.01);
+            v.punch = 0.0;
+            v.lunge_amp = profile.lunge;
+            v.punch_anim_speed = profile.anim_speed;
+            v.hit = 0.0;
+            // Wind-up holds Idle (lean is positional); Punch starts when telegraph ends.
+            set_clip(engine, v, MechClip::Idle, true);
         }
+        if let Some(tid) = hit_target {
+            self.pending_hits.push(PendingHit {
+                target_id: tid,
+                delay: profile.telegraph,
+                duration: profile.hit_duration,
+            });
+        }
+        profile.total()
     }
 
-    pub fn play_hit(&mut self, engine: &mut blade_engine::Engine, id: u32) {
+    pub fn play_hit(&mut self, engine: &mut blade_engine::Engine, id: u32, duration: f32) {
         if let Some(v) = self.visuals.get_mut(&id) {
-            if v.clip == MechClip::Death {
+            if v.death_locked || v.clip == MechClip::Death {
                 return;
             }
-            v.hit = 0.48;
+            v.hit = duration.max(0.1);
             set_clip(engine, v, MechClip::Hit, false);
         }
     }
@@ -178,12 +270,26 @@ impl Arena {
             for vis in self.visuals.values() {
                 if vis.punch > 0.0 {
                     let flash = vis.pos + Vec3::Y * 1.6 + vis.punch_dir * 0.8;
-                    let k = vis.punch / PUNCH_SECS;
+                    let k = (vis.punch / vis.punch_duration.max(0.01)).clamp(0.0, 1.0);
                     push(
                         &mut lights,
                         flash.into(),
                         [18.0 * k, 8.0 * k, 2.5 * k],
                         6.0,
+                    );
+                }
+            }
+            for vis in self.visuals.values() {
+                if vis.telegraph > 0.0 {
+                    let k = (vis.telegraph / vis.telegraph_duration.max(0.01)).clamp(0.0, 1.0);
+                    // Charge glow builds as wind-up completes (k goes 1→0).
+                    let build = 1.0 - k;
+                    let glow = vis.pos + Vec3::Y * 1.4 - vis.punch_dir * 0.35;
+                    push(
+                        &mut lights,
+                        glow.into(),
+                        [6.0 * build, 3.5 * build, 14.0 * build],
+                        5.0,
                     );
                 }
             }
@@ -198,7 +304,7 @@ impl Arena {
         engine.set_point_lights(&lights);
     }
 
-    /// Lerp mechs toward grid cells, bob while walking, lunge on attack.
+    /// Lerp mechs toward grid cells, bob while walking, telegraph lean + lunge on attack.
     pub fn tick(
         &mut self,
         engine: &mut blade_engine::Engine,
@@ -209,13 +315,29 @@ impl Arena {
         if self.kind != ViewMode::Battle {
             return;
         }
+
+        // Deferred hit reactions land when the strike starts (end of telegraph).
+        let mut due = Vec::new();
+        self.pending_hits.retain_mut(|ph| {
+            ph.delay -= dt;
+            if ph.delay <= 0.0 {
+                due.push((ph.target_id, ph.duration));
+                false
+            } else {
+                true
+            }
+        });
+        for (tid, dur) in due {
+            self.play_hit(engine, tid, dur);
+        }
+
         for mech in &mission.mechs {
             let Some(vis) = self.visuals.get_mut(&mech.id) else {
                 continue;
             };
             // Wrecks stay on the tile — a slight slump, not a fall-through.
             let target = if mech.destroyed {
-                cell_to_world(mech.position) + Vec3::Y * -0.12
+                cell_to_world(mech.position) + Vec3::Y * -0.18
             } else {
                 cell_to_world(mech.position)
             };
@@ -224,7 +346,9 @@ impl Arena {
             let speed = if mech.destroyed { 5.0 } else { 9.0 };
             if dist > 0.02 {
                 vis.pos += to_target.normalize() * (speed * dt).min(dist);
-                vis.bob += dt * 10.0;
+                if !mech.destroyed {
+                    vis.bob += dt * 10.0;
+                }
             } else {
                 vis.pos = target;
                 vis.bob *= (1.0 - dt * 8.0).max(0.0);
@@ -238,9 +362,24 @@ impl Arena {
             while dy < -std::f32::consts::PI {
                 dy += std::f32::consts::TAU;
             }
-            vis.yaw += dy * (1.0 - (-12.0 * dt).exp());
+            if !vis.death_locked {
+                vis.yaw += dy * (1.0 - (-12.0 * dt).exp());
+            }
 
-            if vis.punch > 0.0 {
+            // Telegraph → strike transition.
+            if vis.telegraph > 0.0 {
+                vis.telegraph = (vis.telegraph - dt).max(0.0);
+                if vis.telegraph <= 0.0 && !vis.death_locked {
+                    vis.punch = vis.punch_duration;
+                    set_clip_with_speed(
+                        engine,
+                        vis,
+                        MechClip::Punch,
+                        false,
+                        vis.punch_anim_speed,
+                    );
+                }
+            } else if vis.punch > 0.0 {
                 vis.punch = (vis.punch - dt).max(0.0);
             }
             if vis.hit > 0.0 {
@@ -252,18 +391,22 @@ impl Arena {
             } else {
                 vis.bob.sin() * 0.08 * (dist * 2.0).min(1.0)
             };
-            let lunge_k = if vis.punch > 0.0 {
-                // Forward then back over the same window as `PUNCH_SECS`.
-                let t = (1.0 - vis.punch / PUNCH_SECS).clamp(0.0, 1.0);
-                if t < 0.45 {
-                    (t / 0.45) * 0.55
+
+            // Wind-up leans back; strike lunges forward then recovers.
+            let lean = if vis.telegraph > 0.0 {
+                let t = 1.0 - (vis.telegraph / vis.telegraph_duration.max(0.01));
+                -vis.lunge_amp * 0.35 * t
+            } else if vis.punch > 0.0 {
+                let t = (1.0 - vis.punch / vis.punch_duration.max(0.01)).clamp(0.0, 1.0);
+                if t < 0.4 {
+                    (t / 0.4) * vis.lunge_amp
                 } else {
-                    (1.0 - (t - 0.45) / 0.55) * 0.55
+                    (1.0 - (t - 0.4) / 0.6) * vis.lunge_amp
                 }
             } else {
                 0.0
             };
-            let pos = vis.pos + Vec3::Y * bob_y + vis.punch_dir * lunge_k;
+            let pos = vis.pos + Vec3::Y * bob_y + vis.punch_dir * lean;
             let q = Quat::from_rotation_y(vis.yaw);
             engine.teleport_object(
                 vis.handle,
@@ -281,11 +424,37 @@ impl Arena {
             } else {
                 1.0
             };
-            let tint = mech_tint(mech, pulse);
+            let mut tint = mech_tint(mech, pulse);
+            if vis.telegraph > 0.0 {
+                let build = 1.0 - (vis.telegraph / vis.telegraph_duration.max(0.01));
+                tint[0] = (tint[0] + 0.55 * build).min(2.2);
+                tint[1] = (tint[1] + 0.25 * build).min(2.0);
+                tint[2] = (tint[2] + 0.35 * build).min(2.2);
+            }
             engine.set_color_tint(vis.handle, tint);
 
-            let want = if mech.destroyed {
-                MechClip::Death
+            if mech.destroyed {
+                if !vis.death_locked {
+                    vis.death_locked = true;
+                    vis.death_age = 0.0;
+                    vis.death_frozen = false;
+                    vis.telegraph = 0.0;
+                    vis.punch = 0.0;
+                    vis.hit = 0.0;
+                    set_clip_with_speed(engine, vis, MechClip::Death, false, 0.95);
+                } else {
+                    vis.death_age += dt;
+                    // Freeze on the fallen pose so the clip cannot restart or idle-pop.
+                    if !vis.death_frozen && vis.death_age >= 1.15 {
+                        freeze_clip(engine, vis);
+                        vis.death_frozen = true;
+                    }
+                }
+                continue;
+            }
+
+            let want = if vis.telegraph > 0.0 {
+                MechClip::Idle
             } else if vis.punch > 0.0 {
                 MechClip::Punch
             } else if vis.hit > 0.0 {
@@ -295,12 +464,16 @@ impl Arena {
             } else {
                 MechClip::Idle
             };
-            set_clip(
-                engine,
-                vis,
-                want,
-                matches!(want, MechClip::Idle | MechClip::Walk),
-            );
+            if matches!(want, MechClip::Punch) {
+                // Punch already started with the right speed at telegraph end.
+            } else {
+                set_clip(
+                    engine,
+                    vis,
+                    want,
+                    matches!(want, MechClip::Idle | MechClip::Walk),
+                );
+            }
         }
 
         draw_tactical_overlay(engine, mission, selected);
@@ -591,16 +764,42 @@ fn set_clip(
     clip: MechClip,
     looping: bool,
 ) {
-    if vis.clip == clip {
+    let speed = if matches!(clip, MechClip::Punch | MechClip::Hit | MechClip::Death) {
+        1.15
+    } else {
+        1.0
+    };
+    set_clip_with_speed(engine, vis, clip, looping, speed);
+}
+
+fn set_clip_with_speed(
+    engine: &mut blade_engine::Engine,
+    vis: &mut MechVisual,
+    clip: MechClip,
+    looping: bool,
+    speed: f32,
+) {
+    if vis.death_locked && clip != MechClip::Death {
+        return;
+    }
+    // Sticky clips: skip no-op. Punch may re-fire from the start on a new attack.
+    if vis.clip == clip && !matches!(clip, MechClip::Punch) {
         return;
     }
     vis.clip = clip;
     let mut player = blade_engine::AnimationPlayer::new(clip_index(clip, vis.walk_index));
     player.looping = looping;
-    if matches!(clip, MechClip::Punch | MechClip::Hit | MechClip::Death) {
-        player.speed = 1.15;
-    }
+    player.speed = speed;
     engine.set_animation(vis.handle, Some(player));
+}
+
+fn freeze_clip(engine: &mut blade_engine::Engine, vis: &mut MechVisual) {
+    // Re-apply Death at speed 0 so the wreck stops ticking back toward bind pose.
+    let mut player = blade_engine::AnimationPlayer::new(clip_index(MechClip::Death, vis.walk_index));
+    player.looping = false;
+    player.speed = 0.0;
+    engine.set_animation(vis.handle, Some(player));
+    vis.clip = MechClip::Death;
 }
 
 fn spawn_mech(engine: &mut blade_engine::Engine, mech: &Mech) -> MechVisual {
@@ -637,10 +836,18 @@ fn spawn_mech(engine: &mut blade_engine::Engine, mech: &Mech) -> MechVisual {
         pos,
         yaw,
         bob: 0.0,
+        telegraph: 0.0,
+        telegraph_duration: 0.22,
         punch: 0.0,
+        punch_duration: DEFAULT_STRIKE_SECS,
+        lunge_amp: 0.55,
+        punch_anim_speed: 1.15,
         hit: 0.0,
         punch_dir: Vec3::Z,
         clip: MechClip::Hit, // force the first set_clip to apply Idle
+        death_locked: false,
+        death_age: 0.0,
+        death_frozen: false,
         walk_index,
     };
     set_clip(engine, &mut vis, MechClip::Idle, true);
