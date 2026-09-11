@@ -627,11 +627,13 @@ fn spawn_surface_roads(
     height: i32,
 ) -> Vec<blade_engine::ObjectHandle> {
     let mut handles = Vec::new();
-    // Plaza asphalt reads too lilac under cool twilight ambient — desaturate
-    // so dusk sky keeps the chroma lead. Warm-tint cells under sodium lamps
-    // so pads read as lit ground even when lavapipe softens local pools.
-    let plaza_tint = [0.58, 0.56, 0.50, 1.0];
-    let pad_tint = [1.65, 1.00, 0.38, 1.0];
+    // Kenney road tiles are authored 1×1; CELL is 2. With scale 1 the dusk sky
+    // showed through the gaps and read as a flat lilac "floor". Scale to CELL
+    // so asphalt covers the plaza, then desaturate so sky keeps chroma lead.
+    // Warm-tint sodium cells so pads read even when lavapipe softens locals.
+    let plaza_tint = [0.62, 0.60, 0.54, 1.0];
+    let pad_tint = [1.55, 0.95, 0.38, 1.0];
+    let road_scale = CELL; // 1×1 mesh → 2×2 cell cover
     for z in 0..height {
         for x in 0..width {
             let path = if (x + z) % 5 == 0 {
@@ -647,7 +649,7 @@ fn spawn_surface_roads(
                 format!("road-{x}-{z}"),
                 path,
                 [pos.x, -1.0, pos.z],
-                1.0,
+                road_scale,
             );
             let lamp_pad = SODIUM_CELLS.iter().any(|&(lx, lz)| lx == x && lz == z);
             engine.set_color_tint(h, if lamp_pad { pad_tint } else { plaza_tint });
