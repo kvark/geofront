@@ -630,8 +630,8 @@ fn spawn_surface_roads(
     // Plaza asphalt reads too lilac under cool twilight ambient — desaturate
     // so dusk sky keeps the chroma lead. Warm-tint cells under sodium lamps
     // so pads read as lit ground even when lavapipe softens local pools.
-    let plaza_tint = [0.72, 0.70, 0.64, 1.0];
-    let pad_tint = [1.55, 0.95, 0.42, 1.0];
+    let plaza_tint = [0.58, 0.56, 0.50, 1.0];
+    let pad_tint = [1.65, 1.00, 0.38, 1.0];
     for z in 0..height {
         for x in 0..width {
             let path = if (x + z) % 5 == 0 {
@@ -1004,10 +1004,10 @@ pub fn combat_camera(
     // Over-the-shoulder street shot: stay inside the 8×8 so outer canyon
     // walls frame the lane instead of clipping the lens. Slightly raised /
     // pulled back so the near hero mech isn't cropped mid-shot.
-    let dist = 6.7 - k * 1.6;
-    let side_off = 3.0 - k * 0.75;
-    let height = 2.95 - k * 0.55;
-    let fov = 0.74 + k * 0.10;
+    let dist = 7.2 - k * 1.5;
+    let side_off = 2.85 - k * 0.7;
+    let height = 3.25 - k * 0.5;
+    let fov = 0.72 + k * 0.10;
 
     let eye = focus - along * dist + side * side_off + Vec3::Y * height;
     // Look slightly above foot level so the shot reads more horizontal.
