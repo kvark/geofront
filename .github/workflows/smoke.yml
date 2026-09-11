@@ -1,0 +1,78 @@
+name: smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lavapipe-autoplay:
+    name: lavapipe autoplay
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      # Shaders are committed (incl. Tokyo-3 twilight patch in raster.wgsl).
+      # Do not run scripts/fetch-shaders.sh here — it would clobber that patch.
+
+      - name: Setup Rust
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup default 1.92.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: smoke-release
+
+      - name: Install lavapipe + Xvfb + window deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb vulkan-tools mesa-vulkan-drivers libvulkan1 \
+            libxkbcommon0 libxkbcommon-x11-0 \
+            libxkbcommon-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libwayland-dev pkg-config
+          ICD=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -1)
+          echo "Using Vulkan ICD $ICD"
+          echo "VK_ICD_FILENAMES=$ICD" >> "$GITHUB_ENV"
+          vulkaninfo --summary 2>/dev/null | head -40 || true
+
+      - name: Build release
+        run: cargo build --release --locked
+
+      - name: Headless autoplay smoke (Xvfb + lavapipe)
+        timeout-minutes: 8
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GEOFRONT_VIEW: battle
+          GEOFRONT_AUTOPLAY: "1"
+          GEOFRONT_QUIT_AFTER: "120"
+          RUST_LOG: info
+          RUST_BACKTRACE: "1"
+        run: |
+          set -euo pipefail
+          LOG="$(mktemp)"
+          set +e
+          xvfb-run -a ./target/release/geofront 2>&1 | tee "$LOG"
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          echo "--- smoke process exit: $STATUS ---"
+          if grep -q 'AUTOPLAY: DEFEAT' "$LOG"; then
+            echo "::error::Autoplay ended in DEFEAT"
+            exit 1
+          fi
+          if grep -qiE 'panicked at|thread .+ panicked' "$LOG"; then
+            echo "::error::Panic detected in smoke log"
+            exit 1
+          fi
+          if ! grep -q 'AUTOPLAY: VICTORY' "$LOG"; then
+            echo "::error::Missing AUTOPLAY: VICTORY in smoke log (process exit=$STATUS)"
+            exit 1
+          fi
+          echo "Smoke OK: AUTOPLAY: VICTORY found"
