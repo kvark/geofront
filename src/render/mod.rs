@@ -12,6 +12,9 @@ use crate::units::{AlienKind, Facing, Mech, Team};
 /// World units per tactical grid cell (matches Kenney road tile width).
 pub const CELL: f32 = 2.0;
 
+/// Sodium street-lamp grid cells (shared by locals + warm ground pads).
+const SODIUM_CELLS: [(i32, i32); 5] = [(1, 1), (1, 6), (6, 1), (6, 6), (3, 4)];
+
 /// Default player strike length when no profile is supplied.
 const DEFAULT_STRIKE_SECS: f32 = 0.55;
 
@@ -271,10 +274,12 @@ impl Arena {
                 // Warm sodium street lamps. Cap at 5 so punch/telegraph/wreck
                 // flashes still fit under MAX_LOCAL_LIGHTS=8.
                 // Color is deep orange (not creamy white) for Tokyo-3 night.
-                let sodium = [1.0, 0.52, 0.16];
-                for (x, z) in [(1i32, 1), (1, 6), (6, 1), (6, 6), (3, 4)] {
+                // Lavapipe reads pools weakly on flat Kenney asphalt — brighter,
+                // larger falloff, slightly lower so the street gets the lobe.
+                let sodium = [1.0, 0.55, 0.14];
+                for &(x, z) in &SODIUM_CELLS {
                     let p = cell_to_world(IVec2::new(x, z));
-                    push(&mut lights, [p.x, 2.6, p.z], sodium, 210.0, 12.5);
+                    push(&mut lights, [p.x, 2.05, p.z], sodium, 420.0, 17.5);
                 }
             }
         }
@@ -622,6 +627,11 @@ fn spawn_surface_roads(
     height: i32,
 ) -> Vec<blade_engine::ObjectHandle> {
     let mut handles = Vec::new();
+    // Plaza asphalt reads too lilac under cool twilight ambient — desaturate
+    // so dusk sky keeps the chroma lead. Warm-tint cells under sodium lamps
+    // so pads read as lit ground even when lavapipe softens local pools.
+    let plaza_tint = [0.72, 0.70, 0.64, 1.0];
+    let pad_tint = [1.55, 0.95, 0.42, 1.0];
     for z in 0..height {
         for x in 0..width {
             let path = if (x + z) % 5 == 0 {
@@ -632,14 +642,30 @@ fn spawn_surface_roads(
                 "models/roads/road-crossing.glb"
             };
             let pos = cell_to_world(IVec2::new(x, z));
-            handles.push(add_static(
+            let h = add_static(
                 engine,
                 format!("road-{x}-{z}"),
                 path,
                 [pos.x, -1.0, pos.z],
                 1.0,
-            ));
+            );
+            let lamp_pad = SODIUM_CELLS.iter().any(|&(lx, lz)| lx == x && lz == z);
+            engine.set_color_tint(h, if lamp_pad { pad_tint } else { plaza_tint });
+            handles.push(h);
         }
+    }
+    // Visual sodium fixtures (Kenney light-square is ~0.6m; scale up to street).
+    for (i, &(x, z)) in SODIUM_CELLS.iter().enumerate() {
+        let pos = cell_to_world(IVec2::new(x, z));
+        let h = add_static(
+            engine,
+            format!("sodium-lamp-{i}"),
+            "models/roads/light-square.glb",
+            [pos.x, 0.0, pos.z],
+            4.2,
+        );
+        engine.set_color_tint(h, [2.4, 1.25, 0.35, 1.0]);
+        handles.push(h);
     }
     handles
 }
@@ -976,15 +1002,16 @@ pub fn combat_camera(
     let k = k * k;
 
     // Over-the-shoulder street shot: stay inside the 8×8 so outer canyon
-    // walls frame the lane instead of clipping the lens.
-    let dist = 5.8 - k * 1.8;
-    let side_off = 3.2 - k * 0.9;
-    let height = 2.35 - k * 0.7;
-    let fov = 0.76 + k * 0.12;
+    // walls frame the lane instead of clipping the lens. Slightly raised /
+    // pulled back so the near hero mech isn't cropped mid-shot.
+    let dist = 6.7 - k * 1.6;
+    let side_off = 3.0 - k * 0.75;
+    let height = 2.95 - k * 0.55;
+    let fov = 0.74 + k * 0.10;
 
     let eye = focus - along * dist + side * side_off + Vec3::Y * height;
     // Look slightly above foot level so the shot reads more horizontal.
-    frame_camera(eye, focus + Vec3::Y * (0.55 + k * 0.35), fov)
+    frame_camera(eye, focus + Vec3::Y * (0.45 + k * 0.30), fov)
 }
 
 /// Elevated city overview cameras — also used to seed FlyCam.
