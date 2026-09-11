@@ -241,31 +241,31 @@ impl Game {
         engine.set_raster_config(blade_render::RasterConfig {
             clear_color: blade_graphics::TextureColor::OpaqueBlack,
             light_dir: mint::Vector3 {
-                x: 0.3,
-                y: 0.8,
-                z: 0.4,
+                x: 0.35,
+                y: 0.85,
+                z: 0.35,
             },
+            // Quaternius mech albedo sits ~0.2–0.35 linear under lavapipe +
+            // Reinhard; the previous 2.6/0.16 pair left skinned mechs as
+            // near-black silhouettes once directional shadows kicked in.
             light_color: mint::Vector3 {
-                x: 2.6,
-                y: 2.4,
-                z: 2.0,
+                x: 9.5,
+                y: 8.6,
+                z: 7.4,
             },
             ambient_color: mint::Vector3 {
-                x: 0.16,
-                y: 0.17,
-                z: 0.20,
+                x: 0.72,
+                y: 0.74,
+                z: 0.82,
             },
             space_sky: false,
             // blade#381 always attaches raster_shadow_fs so WebGL2 can link
             // the depth pipeline. Same map on native and wasm.
-            directional_shadows: Some(blade_render::DirectionalShadowConfig {
-                resolution: 1024,
-                distance: 36.0,
-                depth: 90.0,
-                strength: 0.62,
-                normal_bias: 0.08,
-            }),
-            point_lights: Vec::new(),
+            // Lavapipe + skinned Quaternius meshes: enabling the directional
+            // shadow map turns mech albedo into black silhouettes (likely bad
+            // depth compares / self-shadow). Keep ambient+direct strong and
+            // skip the map until Blade hardens skinned shadow receivers.
+            directional_shadows: None,
         });
 
         let egui_context = egui::Context::default();
