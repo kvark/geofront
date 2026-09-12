@@ -17,10 +17,10 @@ name = "geofront"
 path = "src/main.rs"
 
 [dependencies]
-blade-engine = { git = "https://github.com/kvark/blade", rev = "c2f670d876f7ce6725897ff18a6f0ac2b5688f76" }
-blade-graphics = { git = "https://github.com/kvark/blade", rev = "c2f670d876f7ce6725897ff18a6f0ac2b5688f76" }
-blade-particle = { git = "https://github.com/kvark/blade", rev = "c2f670d876f7ce6725897ff18a6f0ac2b5688f76" }
-blade-render = { git = "https://github.com/kvark/blade", rev = "c2f670d876f7ce6725897ff18a6f0ac2b5688f76" }
+blade-engine = { git = "https://github.com/kvark/blade", rev = "221e9824248349c813cdf3d790b14ca53671f40a" }
+blade-graphics = { git = "https://github.com/kvark/blade", rev = "221e9824248349c813cdf3d790b14ca53671f40a" }
+blade-particle = { git = "https://github.com/kvark/blade", rev = "221e9824248349c813cdf3d790b14ca53671f40a" }
+blade-render = { git = "https://github.com/kvark/blade", rev = "221e9824248349c813cdf3d790b14ca53671f40a" }
 egui = "0.34"
 egui-winit = { version = "0.34", default-features = false, features = ["links"] }
 glam = { version = "0.30", features = ["mint"] }

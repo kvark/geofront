@@ -238,8 +238,8 @@ impl Game {
             },
         );
 
-        // Tokyo-3 twilight: warm low sun vs cool ambient fill. Keep
-        // directional_shadows off under lavapipe (skinned mechs go black).
+        // Tokyo-3 twilight: warm low sun vs cool ambient fill, with real
+        // directional contact shadows (Blade tip hardens skinned receivers).
         engine.set_raster_config(blade_render::RasterConfig {
             clear_color: blade_graphics::TextureColor::OpaqueBlack,
             // Low evening sun glancing across the street canyon.
@@ -262,10 +262,16 @@ impl Game {
                 z: 0.24,
             },
             space_sky: false,
-            // Lavapipe + skinned Quaternius: directional shadow map turns
-            // mech albedo into black silhouettes. Leave off until Blade
-            // hardens skinned shadow receivers.
-            directional_shadows: None,
+            // Tight ortho around the 8×8 plaza; dual receiver bias from
+            // blade#390 keeps skinned Quaternius mechs lit under lavapipe.
+            directional_shadows: Some(blade_render::DirectionalShadowConfig {
+                resolution: 2048,
+                distance: 42.0,
+                depth: 160.0,
+                strength: 0.78,
+                normal_bias: 0.14,
+                depth_bias: 0.06,
+            }),
         });
 
         let egui_context = egui::Context::default();
