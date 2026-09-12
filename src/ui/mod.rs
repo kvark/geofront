@@ -391,11 +391,14 @@ fn battle_panel(
         .stick_to_bottom(true)
         .show(ui, |ui| {
             for line in mission.log.iter().rev().take(40).rev() {
+                let at_recharge = line.contains("AT Field recharges");
                 let drama = line.contains("may refuse next order")
                     || line.contains("refuses the")
                     || line.contains("steadies")
                     || line.contains("sees the pattern");
-                if drama {
+                if at_recharge {
+                    ui.colored_label(egui::Color32::from_rgb(100, 210, 255), line);
+                } else if drama {
                     let color = if line.contains("refuses the") {
                         egui::Color32::from_rgb(255, 120, 120)
                     } else if line.contains("may refuse") {

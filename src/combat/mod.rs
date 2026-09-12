@@ -776,8 +776,30 @@ impl Mission {
         queue
     }
 
+
+    /// Restore shattered player AT Fields to one charge (End Turn). Mass keeps its own rules.
+    fn recharge_player_at_fields(&mut self) {
+        let mut names = Vec::new();
+        for m in self.mechs.iter_mut() {
+            if m.team != Team::Player || m.destroyed || m.alien.is_some() {
+                continue;
+            }
+            if m.at_field == 0 {
+                m.at_field = 1;
+                names.push(m.name.clone());
+            }
+        }
+        for name in names {
+            let line = format!("{name}'s AT Field recharges.");
+            log::info!("AT_FIELD_RECHARGE: {line}");
+            self.log.push(line);
+        }
+    }
+
     /// Plan enemy moves into `enemy_queue`. Presentation plays them one by one.
     pub fn begin_enemy_turn(&mut self) {
+        // End Turn: player AT Field recharges to 1 if shattered (max 1). Mass unchanged.
+        self.recharge_player_at_fields();
         self.phase = TurnPhase::Enemy;
         self.enemy_queue.clear();
         self.refresh_team(Team::Enemy);
@@ -1124,6 +1146,57 @@ mod tests {
     }
 
     #[test]
+
+    #[test]
+    fn player_at_field_recharges_on_end_turn() {
+        let mut m = Mission::new_skirmish();
+        m.mech_mut(0).unwrap().at_field = 0;
+        m.mech_mut(1).unwrap().at_field = 1;
+        // Mass shattered mid-fight — must not recharge on End Turn.
+        m.mech_mut(11).unwrap().at_field = 0;
+
+        m.begin_enemy_turn();
+
+        assert_eq!(m.mech(0).unwrap().at_field, 1, "shattered player field recharges to 1");
+        assert_eq!(m.mech(1).unwrap().at_field, 1, "intact player field stays at max 1");
+        assert_eq!(m.mech(11).unwrap().at_field, 0, "Mass keeps no end-turn recharge");
+        assert!(
+            m.log.iter().any(|l| l.contains("Coil") && l.contains("AT Field recharges")),
+            "cyan recharge log expected; log={:?}",
+            m.log
+        );
+        assert!(
+            !m.log.iter().any(|l| l.contains("Bastion") && l.contains("AT Field recharges")),
+            "no recharge log when still charged; log={:?}",
+            m.log
+        );
+        assert!(
+            !m.log.iter().any(|l| l.contains("Mass") && l.contains("AT Field recharges")),
+            "Mass must not log recharge; log={:?}",
+            m.log
+        );
+    }
+
+    #[test]
+    fn player_at_field_recharge_caps_at_one() {
+        let mut m = Mission::new_skirmish();
+        m.mech_mut(0).unwrap().at_field = 0;
+        m.begin_enemy_turn();
+        assert_eq!(m.mech(0).unwrap().at_field, 1);
+        // Second End Turn while already charged must not stack above max 1.
+        m.phase = TurnPhase::Player;
+        m.enemy_queue.clear();
+        let log_len = m.log.len();
+        m.begin_enemy_turn();
+        assert_eq!(m.mech(0).unwrap().at_field, 1, "max 1 — no stacking");
+        assert!(
+            !m.log[log_len..]
+                .iter()
+                .any(|l| l.contains("Coil") && l.contains("AT Field recharges")),
+            "no second recharge log when already charged"
+        );
+    }
+
     fn mass_at_field_absorbs_then_takes_damage() {
         let mut m = Mission::new_skirmish();
         // Pull Mass into Coil range (opening spawn is 5 tiles away).
@@ -1597,7 +1670,7 @@ mod tests {
         autoplay_loop(&mut m, 20);
         assert!(
             m.is_won(),
-            "expected victory with player+Mass AT Field; log={:?}",
+            "expected victory with player AT Field recharge + Mass field; log={:?}",
             m.log
         );
     }

@@ -170,7 +170,7 @@ pub struct Mech {
     pub acted: bool,
     /// `Some` for alien enemies; player mechs stay `None`.
     pub alien: Option<AlienKind>,
-    /// Remaining AT Field absorbs (player mechs: 1; Mass: 2; Eva-ish deflect).
+    /// Remaining AT Field absorbs (player: max 1, recharges on End Turn; Mass: 2, no end-turn recharge).
     pub at_field: u8,
 }
 
