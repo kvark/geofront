@@ -4,7 +4,7 @@
 # gradient after a sync (search for "Tokyo-3 twilight" in raster.wgsl).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REV="221e9824248349c813cdf3d790b14ca53671f40a"
+REV="07338d682aa403b8dd8e28e82b832d084139dd35"
 mkdir -p "$ROOT/assets/shaders"
 BASE="https://raw.githubusercontent.com/kvark/blade/${REV}/blade-render/code"
 for f in a-trous.wgsl brdf.inc.wgsl camera.inc.wgsl color.inc.wgsl \

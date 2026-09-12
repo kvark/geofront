@@ -238,39 +238,40 @@ impl Game {
             },
         );
 
-        // Tokyo-3 twilight: warm low sun vs cool ambient fill, with real
-        // directional contact shadows (Blade tip hardens skinned receivers).
+        // Tokyo-3 dusk battle: low warm key, purple ambient fill, contact
+        // shadows on (Blade skinned-receiver bias). Anime street mood —
+        // sodium/neon locals + fog/rim live in raster.wgsl / Arena lights.
         engine.set_raster_config(blade_render::RasterConfig {
             clear_color: blade_graphics::TextureColor::OpaqueBlack,
-            // Low evening sun glancing across the street canyon.
+            // Lower evening sun, more grazing for long canyon shadows.
             light_dir: mint::Vector3 {
-                x: 0.72,
-                y: 0.28,
-                z: 0.18,
+                x: 0.78,
+                y: 0.22,
+                z: 0.12,
             },
-            // Warm sodium/dusk key — strong enough that Quaternius albedo
-            // (~0.2–0.35) stays readable under Reinhard without noonday gray.
+            // Hot dusk key — Quaternius albedo (~0.2–0.35) stays readable
+            // under Reinhard while asphalt stays dark for neon pop.
             light_color: mint::Vector3 {
-                x: 9.2,
-                y: 5.0,
-                z: 2.1,
+                x: 10.5,
+                y: 4.6,
+                z: 1.55,
             },
-            // Cool twilight fill (keep low so sodium + dusk key read).
+            // Cool indigo fill (low so sodium + neon carry the street).
             ambient_color: mint::Vector3 {
-                x: 0.09,
-                y: 0.11,
-                z: 0.24,
+                x: 0.10,
+                y: 0.09,
+                z: 0.18,
             },
             space_sky: false,
             // Tight ortho around the 8×8 plaza; dual receiver bias from
             // blade#390 keeps skinned Quaternius mechs lit under lavapipe.
             directional_shadows: Some(blade_render::DirectionalShadowConfig {
                 resolution: 2048,
-                distance: 42.0,
-                depth: 160.0,
-                strength: 0.78,
-                normal_bias: 0.14,
-                depth_bias: 0.06,
+                distance: 48.0,
+                depth: 180.0,
+                strength: 0.72,
+                normal_bias: 0.15,
+                depth_bias: 0.07,
             }),
         });
 
@@ -281,14 +282,21 @@ impl Game {
 
         let mission = Mission::new_skirmish();
         let view_mode = initial_view_mode();
-        let quit_after = std::env::var("GEOFRONT_QUIT_AFTER")
+        let autoplay = std::env::var_os("GEOFRONT_AUTOPLAY").is_some();
+        // Denser Tokyo-3 scenes need ~180–200s under lavapipe; CI may still pass
+        // QUIT_AFTER=120 until workflow OAuth can bump smoke.yml.
+        let mut quit_after = std::env::var("GEOFRONT_QUIT_AFTER")
             .ok()
-            .and_then(|s| s.parse().ok())
+            .and_then(|s| s.parse::<f32>().ok())
             .or_else(|| {
                 std::env::var("GEOFRONT_SCREENSHOT")
                     .ok()
-                    .map(|_| 8.0)
+                    .map(|_| 8.0_f32)
             });
+        if autoplay {
+            let floor = 200.0_f32;
+            quit_after = Some(quit_after.map(|t| f32::max(t, floor)).unwrap_or(floor));
+        }
         let arena = render::Arena::spawn(&mut engine, view_mode, &mission);
         let fly = render::FlyCam::for_mode(view_mode);
 
@@ -311,7 +319,7 @@ impl Game {
             last_redraw: time::Instant::now(),
             started_at: time::Instant::now(),
             quit_after,
-            autoplay: std::env::var_os("GEOFRONT_AUTOPLAY").is_some(),
+            autoplay,
             autoplay_wait: 0.0,
             autoplay_warmup: 2.5,
             autoplay_done: false,

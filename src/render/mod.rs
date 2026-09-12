@@ -13,7 +13,14 @@ use crate::units::{AlienKind, Facing, Mech, Team};
 pub const CELL: f32 = 2.0;
 
 /// Sodium street-lamp grid cells (shared by locals + warm ground pads).
-const SODIUM_CELLS: [(i32, i32); 5] = [(1, 1), (1, 6), (6, 1), (6, 6), (3, 4)];
+/// Three corners leave two MAX_LOCAL_LIGHTS slots for cyan/magenta neon.
+const SODIUM_CELLS: [(i32, i32); 2] = [(1, 2), (6, 5)];
+
+/// Cool anime accent light (cell + RGB). One neon leaves slots for VFX and
+/// keeps Blade's 1-light reservoir from washing sodium pools to noise.
+const NEON_LIGHTS: [(i32, i32, [f32; 3]); 1] = [
+    (4, 1, [0.3, 0.95, 1.0]), // cyan
+];
 
 /// Default player strike length when no profile is supplied.
 const DEFAULT_STRIKE_SECS: f32 = 0.55;
@@ -470,11 +477,10 @@ impl Arena {
                 }
             }
             ViewMode::CitySurface | ViewMode::Battle => {
-                // Warm sodium street lamps. Cap at 5 so punch/telegraph/wreck
-                // flashes still fit under MAX_LOCAL_LIGHTS=8.
-                // Color is deep orange (not creamy white) for Tokyo-3 night.
-                // Lavapipe reads pools weakly on flat Kenney asphalt — brighter,
-                // larger falloff, slightly lower so the street gets the lobe.
+                // Warm sodium + cool neon accents. Budget: 2 sodium + 1 neon
+                // so punch/telegraph/wreck/AT-Field still fit under MAX=8.
+                // Lavapipe reads pools weakly on flat asphalt — bright, wide,
+                // slightly low so the street gets the lobe.
                 // Only mech (sodium-language) impacts kick the street lamps —
                 // Angel hits keep their own magenta/crimson ground flash.
                 let kick = self
@@ -483,12 +489,19 @@ impl Arena {
                     .filter(|f| strike_palette(f.kind).sodium_kick)
                     .map(|f| impact_envelope(f.t, f.duration))
                     .fold(0.0f32, f32::max);
-                let sodium = [1.0, 0.55, 0.14];
-                let sodium_i = 420.0 * (1.0 + 2.2 * kick);
-                let sodium_r = 17.5 + 4.0 * kick;
+                let sodium = [1.0, 0.52, 0.12];
+                let sodium_i = 920.0 * (1.0 + 2.8 * kick);
+                let sodium_r = 20.0 + 5.0 * kick;
                 for &(x, z) in &SODIUM_CELLS {
                     let p = cell_to_world(IVec2::new(x, z));
-                    push(&mut lights, [p.x, 2.05, p.z], sodium, sodium_i, sodium_r);
+                    push(&mut lights, [p.x, 1.95, p.z], sodium, sodium_i, sodium_r);
+                }
+                let neon_i = 420.0 * (1.0 + 1.3 * kick);
+                let neon_r = 14.0 + 3.0 * kick;
+                for &(x, z, color) in &NEON_LIGHTS {
+                    let p = cell_to_world(IVec2::new(x, z));
+                    // Raise neon slightly so façades catch a cool wash.
+                    push(&mut lights, [p.x, 2.55, p.z], color, neon_i, neon_r);
                 }
             }
         }
@@ -1186,12 +1199,12 @@ fn spawn_surface_roads(
     height: i32,
 ) -> Vec<blade_engine::ObjectHandle> {
     let mut handles = Vec::new();
-    // Kenney road tiles are authored 1×1; CELL is 2. With scale 1 the dusk sky
-    // showed through the gaps and read as a flat lilac "floor". Scale to CELL
-    // so asphalt covers the plaza, then desaturate so sky keeps chroma lead.
-    // Warm-tint sodium cells so pads read even when lavapipe softens locals.
-    let plaza_tint = [0.62, 0.60, 0.54, 1.0];
-    let pad_tint = [1.55, 0.95, 0.38, 1.0];
+    // Kenney road tiles are authored 1×1; CELL is 2. Scale to CELL so asphalt
+    // covers the plaza. Darken + desaturate so sodium/neon/sky pop (less lilac).
+    let plaza_tint = [0.09, 0.085, 0.08, 1.0];
+    let sodium_pad = [2.6, 1.35, 0.28, 1.0];
+    let cyan_pad = [0.55, 1.35, 1.55, 1.0];
+    let magenta_pad = [1.55, 0.45, 1.25, 1.0];
     let road_scale = CELL; // 1×1 mesh → 2×2 cell cover
     for z in 0..height {
         for x in 0..width {
@@ -1210,8 +1223,21 @@ fn spawn_surface_roads(
                 [pos.x, -1.0, pos.z],
                 road_scale,
             );
-            let lamp_pad = SODIUM_CELLS.iter().any(|&(lx, lz)| lx == x && lz == z);
-            engine.set_color_tint(h, if lamp_pad { pad_tint } else { plaza_tint });
+            let tint = if SODIUM_CELLS.iter().any(|&(lx, lz)| lx == x && lz == z) {
+                sodium_pad
+            } else if let Some((_, _, col)) = NEON_LIGHTS
+                .iter()
+                .find(|&&(lx, lz, _)| lx == x && lz == z)
+            {
+                if col[2] > col[0] {
+                    cyan_pad
+                } else {
+                    magenta_pad
+                }
+            } else {
+                plaza_tint
+            };
+            engine.set_color_tint(h, tint);
             handles.push(h);
         }
     }
@@ -1223,9 +1249,22 @@ fn spawn_surface_roads(
             format!("sodium-lamp-{i}"),
             "models/roads/light-square.glb",
             [pos.x, 0.0, pos.z],
-            4.2,
+            4.6,
         );
-        engine.set_color_tint(h, [2.4, 1.25, 0.35, 1.0]);
+        engine.set_color_tint(h, [3.2, 1.55, 0.35, 1.0]);
+        handles.push(h);
+    }
+    // Neon accent fixtures — same mesh, cool tint for anime night read.
+    for (i, &(x, z, color)) in NEON_LIGHTS.iter().enumerate() {
+        let pos = cell_to_world(IVec2::new(x, z));
+        let h = add_static(
+            engine,
+            format!("neon-lamp-{i}"),
+            "models/roads/light-square.glb",
+            [pos.x, 0.05, pos.z],
+            3.8,
+        );
+        engine.set_color_tint(h, [color[0] * 2.8, color[1] * 2.8, color[2] * 2.8, 1.0]);
         handles.push(h);
     }
     handles
@@ -1264,7 +1303,8 @@ fn spawn_surface_buildings(
 
     let mut handles = Vec::new();
     let mut i = 0usize;
-    let margin = if dense { 3 } else { 2 };
+    // One extra ring vs prior Tokyo-3 pass — taller / tighter canyon.
+    let margin = if dense { 4 } else { 2 };
 
     for x in -margin..width + margin {
         for z in -margin..height + margin {
@@ -1281,9 +1321,9 @@ fn spawn_surface_buildings(
             let west_approach = x < 0;
             let place = if dense {
                 if west_approach {
-                    ring == 2 || ring == 3
+                    ring >= 2 && ring <= 4
                 } else {
-                    ring >= 1 && ring <= 3
+                    ring >= 1 && ring <= 4
                 }
             } else {
                 ring == 2 && (x + z) % 2 == 0
@@ -1292,32 +1332,55 @@ fn spawn_surface_buildings(
                 continue;
             }
 
+            // Dark ground pad under each tower so dusk sky doesn't leak
+            // through Kenney footprints as lilac voids.
+            let pos = cell_to_world(IVec2::new(x, z));
+            let pad = add_static(
+                engine,
+                format!("bld-pad-{i}"),
+                "models/roads/tile-low.glb",
+                [pos.x, -1.02, pos.z],
+                CELL * 1.05,
+            );
+            engine.set_color_tint(pad, [0.22, 0.20, 0.24, 1.0]);
+            handles.push(pad);
+
             let path = if ring >= 3 && (i % 4 == 0) {
                 industrial[i % industrial.len()]
-            } else if i % 6 == 0 {
+            } else if i % 7 == 0 {
                 midrise[i % midrise.len()]
             } else {
                 skyscrapers[i % skyscrapers.len()]
             };
 
             let scale = if path.contains("skyscraper") {
-                let base = if dense { 1.7 } else { 1.25 };
-                base + ((i % 4) as f32) * 0.2
+                let base = if dense { 1.95 } else { 1.35 };
+                base + ((i % 5) as f32) * 0.22
             } else if path.contains("chimney") {
-                1.4
+                1.65
             } else if dense {
-                1.25
+                1.45
             } else {
-                1.05
+                1.1
             };
-            let pos = cell_to_world(IVec2::new(x, z));
-            handles.push(add_static(
+            let h = add_static(
                 engine,
                 format!("bld-{i}"),
                 path,
                 [pos.x, 0.0, pos.z],
                 scale,
-            ));
+            );
+            // Night façade tints: cool dusk walls + occasional warm/cyan
+            // "lit floor" boosts (shader also adds procedural window glitter).
+            let tint = match i % 5 {
+                0 => [0.62, 0.52, 0.40, 1.0],       // warm dusk wall
+                1 => [0.48, 0.46, 0.52, 1.0],       // cool-neutral dusk
+                2 => [0.72, 0.50, 0.38, 1.0],       // sodium-washed façade
+                3 => [1.15, 0.78, 0.35, 1.0],       // lit warm floors
+                _ => [0.45, 0.68, 0.78, 1.0],       // sparse cyan neon catch
+            };
+            engine.set_color_tint(h, tint);
+            handles.push(h);
             i += 1;
         }
     }
@@ -1383,16 +1446,17 @@ fn mech_scale(mech: &Mech) -> f32 {
 }
 
 fn mech_tint(mech: &Mech, pulse: f32) -> [f32; 4] {
-    // High gain + saturated team colors so mechs stay readable against the
+    // High gain + saturated team colors so mechs stay heroic against the
     // darker Tokyo-3 twilight (Quaternius albedo ~0.2–0.35 + Reinhard).
+    // Cool player / warm enemy split reads through sodium + cyan neon.
     // Angels lean bone/crimson (Mass) and magenta-violet (Splinter) so they
     // do not read as recolored enemy mechs.
     match mech.alien {
         Some(AlienKind::Mass) => [2.55 * pulse, 1.65 * pulse, 1.35 * pulse, 1.0],
         Some(AlienKind::Splinter) => [1.65 * pulse, 0.85 * pulse, 2.75 * pulse, 1.0],
         None => match mech.team {
-            Team::Player => [1.55 * pulse, 1.95 * pulse, 2.35 * pulse, 1.0],
-            Team::Enemy => [2.35 * pulse, 1.15, 0.95, 1.0],
+            Team::Player => [1.45 * pulse, 2.05 * pulse, 2.55 * pulse, 1.0],
+            Team::Enemy => [2.55 * pulse, 1.2, 0.88, 1.0],
         },
     }
 }
@@ -1571,30 +1635,29 @@ pub fn combat_camera(
     let k = k * k;
     let punch = impact_envelope(punch_t, IMPACT_PUNCH_SECS);
 
-    // Over-the-shoulder street shot: stay inside the 8×8 so outer canyon
-    // walls frame the lane instead of clipping the lens. Slightly raised /
-    // pulled back so the near hero mech isn't cropped mid-shot.
-    // Punch is a sharp FOV/dolly jolt (anime hit-stop beat), not a rewrite
-    // of the existing pull-in.
-    let dist = 7.2 - k * 1.5 - punch * 0.65;
-    let jolt = (punch_t * 53.0).sin() * punch * 0.22;
-    let side_off = 2.85 - k * 0.7 + jolt;
-    let height = 3.25 - k * 0.5 + punch * 0.10;
-    let fov = 0.72 + k * 0.10 + punch * 0.09;
+    // Lower ¾ anime combat frame: stay inside the 8×8 so canyon walls + dusk
+    // sky sillhouette the lane. Pull back enough that horizon glow reads
+    // between towers; punch is a sharp FOV/dolly jolt (hit-stop beat).
+    let dist = 7.8 - k * 1.6 - punch * 0.7;
+    let jolt = (punch_t * 53.0).sin() * punch * 0.24;
+    let side_off = 2.55 - k * 0.55 + jolt;
+    let height = 1.75 - k * 0.2 + punch * 0.08;
+    let fov = 0.82 + k * 0.12 + punch * 0.10;
 
     let eye = focus - along * dist + side * side_off + Vec3::Y * height;
-    // Look slightly above foot level so the shot reads more horizontal.
-    frame_camera(eye, focus + Vec3::Y * (0.45 + k * 0.30), fov)
+    // Look toward upper façades / dusk band for anime street sillhouette.
+    frame_camera(eye, focus + Vec3::Y * (1.05 + k * 0.45), fov)
 }
 
 /// Elevated city overview cameras — also used to seed FlyCam.
 pub fn city_camera(mode: ViewMode) -> blade_engine::FrameCamera {
     match mode {
         ViewMode::CitySurface => {
-            // Street-canyon overview rather than high noon god-cam.
-            let eye = Vec3::new(-4.0, 11.0, -2.5);
-            let focus = Vec3::new(7.0, 3.5, 7.0);
-            frame_camera(eye, focus, 0.72)
+            // Hero canyon overview: lower ¾ into the dusk street, sky glow
+            // between towers (Eva city establishing beat).
+            let eye = Vec3::new(-5.5, 8.2, -3.5);
+            let focus = Vec3::new(7.5, 4.2, 7.5);
+            frame_camera(eye, focus, 0.76)
         }
         ViewMode::CityUnderground => {
             let eye = Vec3::new(-18.0, 16.0, -16.0);

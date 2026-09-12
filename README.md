@@ -13,12 +13,12 @@ Hybrid of XCOM-style base management and *Into the Breach*-style focused mech co
 ## Status
 
 - **Combat** — turn-based skirmish on an 8×8 street grid. Each unit gets move points (orthogonal steps) then one action (attack / wait). Facing, limb targeting, mobility/firepower from limbs, sequential enemy phase. Alien archetypes: **Splinter** (kite/harass, range 5) and **Mass** (slow pressure, range 2, **AT Field** absorbs the first two hits with a cyan cage / deflect FX); placeholder Quaternius meshes with Angel-ish silhouette/FX (scale/presence, magenta vs crimson attack language, telegraph glow) until real angel-class art.
-- **Presentation** — Quaternius skinned GLBs play Idle / Walk / Punch / Hit / Death via `Engine::set_animation`. Attacks use a telegraph wind-up then strike (Splinter snappy, Mass heavy); hit reactions are deferred to impact; death locks and freezes so wrecks stay down. Tokyo-3 twilight mood: warm sodium street lamps vs cool dusk sky, dense skyscraper canyon around the 8×8 grid, low hero combat camera with impact framing; Mech strikes keep warm sodium kick; Angel strikes use distinct magenta (Splinter) / crimson (Mass) impact lights + sparks, per-kind telegraph glow, and debug-line silhouettes (tall spines vs bulk cage) so they read as Angels vs mechs without new meshes. AT Field deflects use cyan cage FX. Move tiles and facing drawn on the ground. Directional contact shadows on (Blade skinned-receiver bias).
+- **Presentation** — Quaternius skinned GLBs play Idle / Walk / Punch / Hit / Death via `Engine::set_animation`. Attacks use a telegraph wind-up then strike (Splinter snappy, Mass heavy); hit reactions are deferred to impact; death locks and freezes so wrecks stay down. Tokyo-3 dusk mood: hot horizon glow + purple haze, denser/taller skyscraper canyon, dark asphalt, warm sodium + cyan/magenta neon street lights, procedural window glitter + cool rim in the raster path, depth fog, and a lower ¾ anime combat camera with impact punch. Mech strikes keep warm sodium kick; Angel strikes use distinct magenta (Splinter) / crimson (Mass) impact lights + sparks, per-kind telegraph glow, and debug-line silhouettes (tall spines vs bulk cage) so they read as Angels vs mechs without new meshes. AT Field deflects use cyan cage FX. Directional contact shadows on (Blade skinned-receiver bias).
 - **City** — Kenney surface block + Space Kit underground hangar (pieces abut on edges, no stacked floors).
 - **HUD** — view switcher, N/W/E/S step, rotate, attack, wait, end turn (Blade + egui). Web also has an HTML view strip so Pages stays playable if the in-canvas panel fails to composite.
-- **Dual target** — native + WASM (assets embedded via `include_dir` + Blade VFS; WASM uses Blade's WebGL2 backend). Pinned to Blade `221e982` (skinned shadow receivers) (#380 texelFetch present so the canvas is not a decoded-sRGB dark frame; #381 shadow FS + wasm32 GLES profile; #378/#379 buffer-class and canvas color-space).
+- **Dual target** — native + WASM (assets embedded via `include_dir` + Blade VFS; WASM uses Blade's WebGL2 backend). Pinned to Blade `07338d6` (skinned shadow receivers) (#380 texelFetch present so the canvas is not a decoded-sRGB dark frame; #381 shadow FS + wasm32 GLES profile; #378/#379 buffer-class and canvas color-space).
 
-See original design notes: https://github.com/kvark/ideas/blob/master/game/eva.md
+North star: [docs/DESIGN.md](docs/DESIGN.md). Original pitch notes: https://github.com/kvark/ideas/blob/master/game/eva.md
 
 ## Setup
 
@@ -108,7 +108,7 @@ Open `?view=battle`, `?view=surface`, or `?view=underground` to pick the startin
 
 ## Roadmap (from the design notes)
 
-Priority tags from [eva.md](https://github.com/kvark/ideas/blob/master/game/eva.md):
+Priority tags from [eva.md](https://github.com/kvark/ideas/blob/master/game/eva.md) (see also [DESIGN.md](docs/DESIGN.md)):
 
 - **(high) GUI** — battle HUD, view switch, log. In-canvas egui plus HTML chrome on wasm.
 - **(med) City** — one large detailed block; living + destructible still ahead.
