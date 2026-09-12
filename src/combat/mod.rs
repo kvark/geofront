@@ -1,7 +1,8 @@
 //! Turn manager, actions, telegraphs (optional), external support requests.
 
+use crate::characters::{PilotDramaKind, PilotHudFlash, drama_line};
 use crate::units::{
-    AlienKind, Facing, LimbKind, Mech, Pilot, SyncBand, Team, HEAVY_LIMB_RATIO, SYNC_CRIT_MULT,
+    AlienKind, Facing, HEAVY_LIMB_RATIO, LimbKind, Mech, Pilot, SYNC_CRIT_MULT, SyncBand, Team,
 };
 use glam::IVec2;
 
@@ -66,6 +67,8 @@ pub enum CombatFx {
     AtFieldAbsorb { target_id: u32 },
     /// Last charge spent — field shatters.
     AtFieldBreak { target_id: u32 },
+    /// Pilot psychology beat (stress spike / refuse / steady) for HUD flash.
+    PilotDrama { unit_id: u32, kind: PilotDramaKind },
 }
 
 #[derive(Debug)]
@@ -81,6 +84,8 @@ pub struct Mission {
     pub enemy_queue: Vec<Action>,
     /// Presentation FX produced by the last applied action(s).
     pub pending_fx: Vec<CombatFx>,
+    /// Last pilot drama beat for a short HUD flash.
+    pub pilot_flash: Option<PilotHudFlash>,
 }
 
 impl Mission {
@@ -108,6 +113,7 @@ impl Mission {
             log: vec!["Mission start: defend the city block.".into()],
             enemy_queue: Vec::new(),
             pending_fx: Vec::new(),
+            pilot_flash: None,
         }
     }
 
@@ -402,7 +408,6 @@ impl Mission {
             return false;
         }
         let chance = self.pilots[idx].refuse_chance();
-        let pname = self.pilots[idx].name.clone();
         let mname = self
             .mech(unit_id)
             .map(|m| m.name.clone())
@@ -414,12 +419,30 @@ impl Mission {
                 m.acted = true;
                 m.move_left = 0;
             }
-            self.log
-                .push(format!("{pname} refuses the {order} — {mname} locks up."));
+            let line = drama_line(PilotDramaKind::Refuse, &self.pilots[idx], &mname, order);
+            self.pilot_flash = Some(PilotHudFlash::new(
+                PilotDramaKind::Refuse,
+                &self.pilots[idx],
+                line.clone(),
+            ));
+            self.pending_fx.push(CombatFx::PilotDrama {
+                unit_id,
+                kind: PilotDramaKind::Refuse,
+            });
+            self.log.push(line);
             true
         } else {
-            self.log
-                .push(format!("{pname} steadies and follows the {order}."));
+            let line = drama_line(PilotDramaKind::Steady, &self.pilots[idx], &mname, order);
+            self.pilot_flash = Some(PilotHudFlash::new(
+                PilotDramaKind::Steady,
+                &self.pilots[idx],
+                line.clone(),
+            ));
+            self.pending_fx.push(CombatFx::PilotDrama {
+                unit_id,
+                kind: PilotDramaKind::Steady,
+            });
+            self.log.push(line);
             false
         }
     }
@@ -456,15 +479,26 @@ impl Mission {
         } else {
             format!("{limb} wrecked")
         };
-        let Some(pilot) = self.pilot_mut(pid) else {
-            return;
+        {
+            let Some(pilot) = self.pilot_mut(pid) else {
+                return;
+            };
+            pilot.spike_from_hit();
+        }
+        let (line, flash) = {
+            let Some(pilot) = self.pilot(pid) else {
+                return;
+            };
+            let line = drama_line(PilotDramaKind::StressSpike, pilot, &mech_name, &reason);
+            let flash = PilotHudFlash::new(PilotDramaKind::StressSpike, pilot, line.clone());
+            (line, flash)
         };
-        let pname = pilot.name.clone();
-        pilot.spike_from_hit();
-        let stress_pct = (pilot.stress * 100.0).round();
-        self.log.push(format!(
-            "{pname} reels in {mech_name} — {reason}; stress {stress_pct:.0}% (may refuse next order)"
-        ));
+        self.pilot_flash = Some(flash);
+        self.pending_fx.push(CombatFx::PilotDrama {
+            unit_id: target_id,
+            kind: PilotDramaKind::StressSpike,
+        });
+        self.log.push(line);
     }
 
     /// Deterministic 0–1 roll for sync crits (stable in tests / autoplay).
@@ -729,36 +763,40 @@ mod tests {
     fn orthogonal_step_and_action_lock() {
         let mut m = Mission::new_skirmish();
         let start = m.mech(0).unwrap().position;
-        assert!(m
-            .apply_action(Action::Move {
+        assert!(
+            m.apply_action(Action::Move {
                 unit_id: 0,
                 to: start + IVec2::new(1, 0)
             })
-            .is_ok());
+            .is_ok()
+        );
         assert_eq!(m.mech(0).unwrap().facing, Facing::East);
         // Diagonal illegal
         let pos = m.mech(0).unwrap().position;
-        assert!(m
-            .apply_action(Action::Move {
+        assert!(
+            m.apply_action(Action::Move {
                 unit_id: 0,
                 to: pos + IVec2::new(1, 1)
             })
-            .is_err());
-        assert!(m
-            .apply_action(Action::Attack {
+            .is_err()
+        );
+        assert!(
+            m.apply_action(Action::Attack {
                 attacker_id: 0,
                 target_id: 10,
                 limb: LimbKind::Torso,
             })
-            .is_ok());
+            .is_ok()
+        );
         // Cannot move after acting
         let pos = m.mech(0).unwrap().position;
-        assert!(m
-            .apply_action(Action::Move {
+        assert!(
+            m.apply_action(Action::Move {
                 unit_id: 0,
                 to: pos + IVec2::new(1, 0)
             })
-            .is_err());
+            .is_err()
+        );
     }
 
     #[test]
@@ -767,13 +805,14 @@ mod tests {
         let a = m.mech(0).unwrap();
         let b = m.mech(10).unwrap();
         assert!(Grid::manhattan(a.position, b.position) <= a.attack_range());
-        assert!(m
-            .apply_action(Action::Attack {
+        assert!(
+            m.apply_action(Action::Attack {
                 attacker_id: 0,
                 target_id: 10,
                 limb: LimbKind::Torso,
             })
-            .is_ok());
+            .is_ok()
+        );
     }
 
     #[test]
@@ -787,10 +826,11 @@ mod tests {
             "smoke log: {:?}",
             m.log
         );
-        assert!(m
-            .log
-            .iter()
-            .any(|l| l.contains("Coil attacked") || l.contains("Bastion attacked")));
+        assert!(
+            m.log
+                .iter()
+                .any(|l| l.contains("Coil attacked") || l.contains("Bastion attacked"))
+        );
     }
 
     #[test]
@@ -876,13 +916,14 @@ mod tests {
             .find(|l| l.kind == LimbKind::Torso)
             .unwrap()
             .hp;
-        assert!(m
-            .apply_action(Action::Attack {
+        assert!(
+            m.apply_action(Action::Attack {
                 attacker_id: 0,
                 target_id: 11,
                 limb: LimbKind::Torso,
             })
-            .is_ok());
+            .is_ok()
+        );
         assert_eq!(m.mech(11).unwrap().at_field, 1);
         let torso_mid = m
             .mech(11)
@@ -900,13 +941,14 @@ mod tests {
             "fx: {:?}",
             m.pending_fx
         );
-        assert!(m
-            .apply_action(Action::Attack {
+        assert!(
+            m.apply_action(Action::Attack {
                 attacker_id: 1,
                 target_id: 11,
                 limb: LimbKind::Torso,
             })
-            .is_ok());
+            .is_ok()
+        );
         assert_eq!(m.mech(11).unwrap().at_field, 0);
         assert!(
             m.pending_fx
@@ -923,17 +965,21 @@ mod tests {
             .find(|l| l.kind == LimbKind::Torso)
             .unwrap()
             .hp;
-        assert_eq!(torso_after_break, torso_before, "shatter absorb still blocks");
+        assert_eq!(
+            torso_after_break, torso_before,
+            "shatter absorb still blocks"
+        );
 
         m.end_player_turn();
         m.take_fx();
-        assert!(m
-            .apply_action(Action::Attack {
+        assert!(
+            m.apply_action(Action::Attack {
                 attacker_id: 0,
                 target_id: 11,
                 limb: LimbKind::Torso,
             })
-            .is_ok());
+            .is_ok()
+        );
         let torso_hurt = m
             .mech(11)
             .unwrap()
@@ -973,9 +1019,28 @@ mod tests {
         assert!(
             m.log
                 .iter()
-                .any(|l| l.contains("reels") && l.contains("L.Arm")),
+                .any(|l| l.contains("may refuse next order") && l.contains("L.Arm")),
             "log: {:?}",
             m.log
+        );
+        assert!(
+            m.pilot_flash.as_ref().is_some_and(|f| {
+                matches!(f.kind, crate::characters::PilotDramaKind::StressSpike)
+                    && f.line.contains("may refuse next order")
+            }),
+            "stress spike should set HUD flash; flash={:?}",
+            m.pilot_flash
+        );
+        assert!(
+            m.pending_fx.iter().any(|fx| matches!(
+                fx,
+                CombatFx::PilotDrama {
+                    unit_id: 0,
+                    kind: crate::characters::PilotDramaKind::StressSpike
+                }
+            )),
+            "stress spike should emit PilotDrama fx; fx={:?}",
+            m.pending_fx
         );
     }
 
@@ -1039,6 +1104,24 @@ mod tests {
             "log: {:?}",
             m.log
         );
+        assert!(
+            m.pilot_flash
+                .as_ref()
+                .is_some_and(|f| matches!(f.kind, crate::characters::PilotDramaKind::Refuse)),
+            "refuse should set HUD flash; flash={:?}",
+            m.pilot_flash
+        );
+        assert!(
+            m.pending_fx.iter().any(|fx| matches!(
+                fx,
+                CombatFx::PilotDrama {
+                    unit_id: 0,
+                    kind: crate::characters::PilotDramaKind::Refuse
+                }
+            )),
+            "refuse should emit PilotDrama fx; fx={:?}",
+            m.pending_fx
+        );
 
         // Flag consumed — next player turn the same unit fires.
         m.mech_mut(0).unwrap().refresh_turn();
@@ -1081,9 +1164,15 @@ mod tests {
         assert_eq!(result, ApplyResult::Done);
         assert!(!m.pilot(0).unwrap().pending_refuse);
         assert!(
-            m.log.iter().any(|l| l.contains("steadies and follows")),
+            m.log.iter().any(|l| l.contains("steadies")),
             "log: {:?}",
             m.log
+        );
+        assert!(
+            m.pilot_flash
+                .as_ref()
+                .is_some_and(|f| matches!(f.kind, crate::characters::PilotDramaKind::Steady)),
+            "steady should set HUD flash"
         );
     }
 
@@ -1248,10 +1337,47 @@ mod tests {
     }
 
     #[test]
+    fn refuse_drama_lines_are_eva_flavored() {
+        let mut m = Mission::new_skirmish();
+        {
+            let p = m.pilot_mut(0).unwrap();
+            p.stress = 1.0;
+            p.loyalty = 0.0;
+            p.sync = 0.2;
+            p.pending_refuse = true;
+        }
+        let _ = m
+            .apply_action(Action::Attack {
+                attacker_id: 0,
+                target_id: 10,
+                limb: LimbKind::Torso,
+            })
+            .unwrap();
+        let refuse = m
+            .log
+            .iter()
+            .rev()
+            .find(|l| l.contains("refuses the attack"))
+            .cloned()
+            .expect("refuse log");
+        assert!(
+            refuse.contains("sync collapse") || refuse.contains("I can't"),
+            "expected Eva-flavored refuse line, got {refuse}"
+        );
+        let flash = m.pilot_flash.as_ref().expect("flash");
+        assert_eq!(flash.caption(), "⛔ ORDER REFUSED");
+        assert!(flash.line.contains("refuses the attack"));
+    }
+
+    #[test]
     fn autoplay_style_still_wins_with_at_field() {
         let mut m = Mission::new_skirmish();
         autoplay_loop(&mut m, 20);
-        assert!(m.is_won(), "expected victory with AT Field; log={:?}", m.log);
+        assert!(
+            m.is_won(),
+            "expected victory with AT Field; log={:?}",
+            m.log
+        );
     }
 
     #[test]

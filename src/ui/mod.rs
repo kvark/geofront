@@ -1,5 +1,6 @@
 //! egui screens: battle HUD, city overview controls, mode switching.
 
+use crate::characters::PilotDramaKind;
 use crate::combat::{Mission, TurnPhase};
 use crate::render::ViewMode;
 use crate::units::{Facing, LimbKind, SyncBand, Team};
@@ -98,6 +99,16 @@ fn battle_panel(
         }
     });
 
+    if let Some(flash) = &mission.pilot_flash {
+        let color = match flash.kind {
+            PilotDramaKind::StressSpike => egui::Color32::from_rgb(255, 170, 70),
+            PilotDramaKind::Refuse => egui::Color32::from_rgb(255, 90, 90),
+            PilotDramaKind::Steady => egui::Color32::from_rgb(140, 220, 160),
+        };
+        ui.colored_label(color, flash.caption());
+        ui.small(&flash.line);
+    }
+
     ui.separator();
 
     ui.columns(2, |cols| {
@@ -153,10 +164,7 @@ fn battle_panel(
                                 SyncBand::Low => egui::Color32::from_rgb(255, 140, 70),
                                 SyncBand::Mid => egui::Color32::LIGHT_GREEN,
                             };
-                            ui.colored_label(
-                                sync_color,
-                                format!("sync {:.0}%", p.sync * 100.0),
-                            );
+                            ui.colored_label(sync_color, format!("sync {:.0}%", p.sync * 100.0));
                             ui.label(format!("loyalty {:.0}%", p.loyalty * 100.0));
                             let stress_color = if p.stress >= 0.6 {
                                 egui::Color32::from_rgb(255, 90, 90)
@@ -189,10 +197,7 @@ fn battle_panel(
                             SyncBand::Low => {
                                 cols[0].colored_label(
                                     egui::Color32::from_rgb(255, 140, 70),
-                                    format!(
-                                        "sync frayed — strikes ×{:.2}",
-                                        p.sync_damage_mult()
-                                    ),
+                                    format!("sync frayed — strikes ×{:.2}", p.sync_damage_mult()),
                                 );
                             }
                             SyncBand::Mid => {}
@@ -355,7 +360,21 @@ fn battle_panel(
         .stick_to_bottom(true)
         .show(ui, |ui| {
             for line in mission.log.iter().rev().take(40).rev() {
-                ui.label(line);
+                let drama = line.contains("may refuse next order")
+                    || line.contains("refuses the")
+                    || line.contains("steadies");
+                if drama {
+                    let color = if line.contains("refuses the") {
+                        egui::Color32::from_rgb(255, 120, 120)
+                    } else if line.contains("may refuse") {
+                        egui::Color32::from_rgb(255, 180, 90)
+                    } else {
+                        egui::Color32::from_rgb(160, 220, 170)
+                    };
+                    ui.colored_label(color, line);
+                } else {
+                    ui.label(line);
+                }
             }
         });
 
