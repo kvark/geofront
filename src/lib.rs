@@ -287,15 +287,15 @@ impl Game {
         // QUIT_AFTER=120 until workflow OAuth can bump smoke.yml.
         let mut quit_after = std::env::var("GEOFRONT_QUIT_AFTER")
             .ok()
-            .and_then(|s| s.parse().ok())
+            .and_then(|s| s.parse::<f32>().ok())
             .or_else(|| {
                 std::env::var("GEOFRONT_SCREENSHOT")
                     .ok()
-                    .map(|_| 8.0)
+                    .map(|_| 8.0_f32)
             });
         if autoplay {
             let floor = 200.0_f32;
-            quit_after = Some(quit_after.map(|t| t.max(floor)).unwrap_or(floor));
+            quit_after = Some(quit_after.map(|t| f32::max(t, floor)).unwrap_or(floor));
         }
         let arena = render::Arena::spawn(&mut engine, view_mode, &mission);
         let fly = render::FlyCam::for_mode(view_mode);
