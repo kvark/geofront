@@ -10,7 +10,7 @@ mod world;
 
 use std::path::PathBuf;
 
-use combat::{Action, ApplyResult, Mission};
+use combat::{Action, ApplyResult, CombatFx, Mission};
 use log::info;
 use units::LimbKind;
 use winit::{
@@ -582,13 +582,32 @@ impl Game {
                                 anim_speed: 1.15,
                                 hit_duration: 0.48,
                             });
-                        let total = self.arena.play_attack(
-                            &mut self.engine,
-                            attacker_id,
-                            to - from,
-                            profile,
-                            Some(target_id),
-                        );
+                        let absorbed = self.mission.pending_fx.iter().any(|fx| {
+                            matches!(fx, CombatFx::AtFieldAbsorb { target_id: t } if *t == target_id)
+                        });
+                        let shattered = self.mission.pending_fx.iter().any(|fx| {
+                            matches!(fx, CombatFx::AtFieldBreak { target_id: t } if *t == target_id)
+                        });
+                        let total = if absorbed {
+                            self.arena.play_attack_ex(
+                                &mut self.engine,
+                                attacker_id,
+                                to - from,
+                                profile,
+                                Some(target_id),
+                                true,
+                                shattered,
+                            )
+                        } else {
+                            self.arena.play_attack(
+                                &mut self.engine,
+                                attacker_id,
+                                to - from,
+                                profile,
+                                Some(target_id),
+                            )
+                        };
+                        self.drain_combat_fx();
                         self.impact_timer = total.max(0.85);
                         self.enemy_step_timer = (total + 0.12).max(0.5);
                     }
@@ -600,6 +619,7 @@ impl Game {
                     }
                     None => {
                         self.mission.finish_enemy_turn();
+                        self.drain_combat_fx();
                         self.enemy_step_timer = 0.0;
                     }
                 }
@@ -790,18 +810,37 @@ impl Game {
                                 anim_speed: 1.15,
                                 hit_duration: 0.48,
                             });
+                        let absorbed = self.mission.pending_fx.iter().any(|fx| {
+                            matches!(fx, CombatFx::AtFieldAbsorb { target_id: t } if *t == target)
+                        });
+                        let shattered = self.mission.pending_fx.iter().any(|fx| {
+                            matches!(fx, CombatFx::AtFieldBreak { target_id: t } if *t == target)
+                        });
                         if let (Some(f), Some(t)) = (from, to) {
-                            let total = self.arena.play_attack(
-                                &mut self.engine,
-                                attacker,
-                                t - f,
-                                profile,
-                                Some(target),
-                            );
+                            let total = if absorbed {
+                                self.arena.play_attack_ex(
+                                    &mut self.engine,
+                                    attacker,
+                                    t - f,
+                                    profile,
+                                    Some(target),
+                                    true,
+                                    shattered,
+                                )
+                            } else {
+                                self.arena.play_attack(
+                                    &mut self.engine,
+                                    attacker,
+                                    t - f,
+                                    profile,
+                                    Some(target),
+                                )
+                            };
                             self.impact_timer = total.max(1.0);
                         } else {
                             self.impact_timer = profile.total().max(1.0);
                         }
+                        self.drain_combat_fx();
                     }
                     Ok(ApplyResult::Skipped) => {
                         // Pilot locked up — log already records the refuse.
@@ -873,6 +912,14 @@ impl Game {
                     self.arena = render::Arena::spawn(&mut self.engine, mode, &self.mission);
                     self.fly = render::FlyCam::for_mode(mode);
                 }
+            }
+        }
+    }
+
+    fn drain_combat_fx(&mut self) {
+        for fx in self.mission.take_fx() {
+            if let CombatFx::CoreFlash { target_id } = fx {
+                self.arena.spawn_core_flash(target_id);
             }
         }
     }

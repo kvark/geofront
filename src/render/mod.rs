@@ -29,6 +29,8 @@ const DEFAULT_STRIKE_SECS: f32 = 0.55;
 const IMPACT_FLASH_SECS: f32 = 0.32;
 /// Sharp camera punch when the strike lands.
 const IMPACT_PUNCH_SECS: f32 = 0.16;
+/// Brief high-sync Angel core / weak-point flash.
+const CORE_FLASH_SECS: f32 = 0.48;
 
 /// 1 at onset, quadratic falloff — lights, tints, and camera punch share this.
 pub fn impact_envelope(remaining: f32, duration: f32) -> f32 {
@@ -253,6 +255,8 @@ pub struct Arena {
     punch_t: f32,
     /// Brief AT Field ring flare (unit_id → seconds remaining).
     at_field_pulse: HashMap<u32, f32>,
+    /// High-sync core / weak-point flash (unit_id → seconds remaining).
+    core_pulse: HashMap<u32, f32>,
     /// Persistent local-light handles (Blade tip uses handle-based LocalLight).
     light_handles: Vec<blade_engine::LightHandle>,
 }
@@ -289,6 +293,7 @@ impl Arena {
             impact_flashes: Vec::new(),
             punch_t: 0.0,
             at_field_pulse: HashMap::new(),
+            core_pulse: HashMap::new(),
             light_handles: Vec::new(),
         }
     }
@@ -302,6 +307,7 @@ impl Arena {
         self.impact_flashes.clear();
         self.punch_t = 0.0;
         self.at_field_pulse.clear();
+        self.core_pulse.clear();
         for h in self.stage_handles.drain(..) {
             engine.remove_object(h);
         }
@@ -434,6 +440,28 @@ impl Arena {
             .or_insert(pulse);
     }
 
+    /// Brief weak-point flash on an Angel (high-sync pattern sight).
+    pub fn spawn_core_flash(&mut self, target_id: u32) {
+        self.core_pulse
+            .entry(target_id)
+            .and_modify(|t| *t = (*t).max(CORE_FLASH_SECS))
+            .or_insert(CORE_FLASH_SECS);
+        let kind = self.visuals.get(&target_id).and_then(|v| v.alien);
+        let height = angel_core_height(kind);
+        let pos = self
+            .visuals
+            .get(&target_id)
+            .map(|v| v.pos + Vec3::Y * height)
+            .unwrap_or(Vec3::Y * height);
+        self.impact_flashes.push(ImpactFlash {
+            pos,
+            t: CORE_FLASH_SECS,
+            duration: CORE_FLASH_SECS,
+            dir: Vec3::Y,
+            at_field: false,
+            kind,
+        });
+    }
 
     pub fn camera_punch(&self) -> f32 {
         self.punch_t
@@ -542,6 +570,22 @@ impl Arena {
                     5.5,
                 );
             }
+            // High-sync core flashes — tight, bright, short (wins a slot after impact).
+            for (&id, &remain) in &self.core_pulse {
+                let Some(vis) = self.visuals.get(&id) else {
+                    continue;
+                };
+                let k = (remain / CORE_FLASH_SECS).clamp(0.0, 1.0);
+                let pal = strike_palette(vis.alien);
+                let h = angel_core_height(vis.alien);
+                push(
+                    &mut lights,
+                    [vis.pos.x, h, vis.pos.z],
+                    pal.telegraph,
+                    420.0 * k * k,
+                    4.2,
+                );
+            }
             for vis in self.visuals.values() {
                 if vis.punch > 0.0 {
                     let pal = strike_palette(vis.alien);
@@ -637,6 +681,10 @@ impl Arena {
             *t = (*t - dt).max(0.0);
         }
         self.at_field_pulse.retain(|_, t| *t > 0.0);
+        for t in self.core_pulse.values_mut() {
+            *t = (*t - dt).max(0.0);
+        }
+        self.core_pulse.retain(|_, t| *t > 0.0);
 
         for mech in &mission.mechs {
             let Some(vis) = self.visuals.get_mut(&mech.id) else {
@@ -811,7 +859,13 @@ impl Arena {
 
         draw_tactical_overlay(engine, mission, selected);
         draw_at_field_rings(engine, mission, &self.visuals, &self.at_field_pulse);
-        draw_angel_silhouettes(engine, mission, &self.visuals);
+        let see_cores = mission
+            .mech(selected)
+            .and_then(|m| m.pilot_id)
+            .and_then(|id| mission.pilot(id))
+            .map(|p| p.can_see_core())
+            .unwrap_or(false);
+        draw_angel_silhouettes(engine, mission, &self.visuals, &self.core_pulse, see_cores);
         draw_impact_sparks(engine, &self.impact_flashes);
     }
 }
@@ -1022,12 +1076,24 @@ fn draw_at_field_rings(
     }
 }
 
+/// Chest-height weak point. Splinter sits higher (spindly); Mass is a low core.
+pub fn angel_core_height(kind: Option<AlienKind>) -> f32 {
+    match kind {
+        Some(AlienKind::Splinter) => 1.35,
+        Some(AlienKind::Mass) => 1.15,
+        None => 1.25,
+    }
+}
+
 /// Soft Angel silhouette without new art: Mass = wide crimson cage,
 /// Splinter = tall magenta spines. Telegraph inflates the ring.
+/// High-sync viewers get a faint core; `core_pulse` is the brief flash.
 fn draw_angel_silhouettes(
     engine: &mut blade_engine::Engine,
     mission: &Mission,
     visuals: &HashMap<u32, MechVisual>,
+    core_pulses: &HashMap<u32, f32>,
+    see_cores: bool,
 ) {
     let mut lines = Vec::new();
     for mech in &mission.mechs {
@@ -1047,6 +1113,11 @@ fn draw_angel_silhouettes(
         } else {
             0.0
         };
+        let pulse = core_pulses
+            .get(&mech.id)
+            .map(|t| (*t / CORE_FLASH_SECS).clamp(0.0, 1.0))
+            .unwrap_or(0.0);
+        let charge = (charge + 0.55 * pulse).min(1.0);
         match kind {
             AlienKind::Mass => {
                 let radius = 1.25 + 0.45 * charge;
@@ -1152,9 +1223,66 @@ fn draw_angel_silhouettes(
                 });
             }
         }
+        if see_cores || pulse > 0.0 {
+            push_angel_core(&mut lines, vis.pos, kind, pulse, see_cores);
+        }
     }
     if !lines.is_empty() {
         engine.add_debug_lines(&lines);
+    }
+}
+
+/// Six-spoke weak-point star. Bright on pulse; faint while high-sync is selected.
+fn push_angel_core(
+    lines: &mut Vec<blade_render::DebugLine>,
+    pos: Vec3,
+    kind: AlienKind,
+    pulse: f32,
+    see: bool,
+) {
+    let height = angel_core_height(Some(kind));
+    let core = pos + Vec3::Y * height;
+    let k = if pulse > 0.0 {
+        0.40 + 0.60 * pulse
+    } else if see {
+        0.28
+    } else {
+        return;
+    };
+    let (color, radius) = match kind {
+        AlienKind::Splinter => {
+            let c = if pulse > 0.15 {
+                0xFF_FF_EE_FF
+            } else {
+                0xFF_DD_88_FF
+            };
+            (c, 0.20 + 0.28 * pulse)
+        }
+        AlienKind::Mass => {
+            let c = if pulse > 0.15 {
+                0xFF_FF_CC_AA
+            } else {
+                0xFF_CC_66_44
+            };
+            (c, 0.26 + 0.32 * pulse)
+        }
+    };
+    let spokes = 6;
+    for i in 0..spokes {
+        let a = (i as f32) * std::f32::consts::TAU / spokes as f32 + pulse * 2.4;
+        let lift = if i % 2 == 0 { 0.22 } else { -0.10 };
+        let dir = Vec3::new(a.cos(), lift, a.sin());
+        let tip = core + dir * (radius * k);
+        lines.push(blade_render::DebugLine {
+            a: blade_render::DebugPoint {
+                pos: core.into(),
+                color,
+            },
+            b: blade_render::DebugPoint {
+                pos: tip.into(),
+                color,
+            },
+        });
     }
 }
 
@@ -1833,5 +1961,12 @@ mod tests {
         let player = Mech::new_player(3, "Coil", IVec2::ZERO);
         assert!(mech_scale(&mass) > mech_scale(&player));
         assert!(mech_scale(&splinter) < mech_scale(&player));
+    }
+
+    #[test]
+    fn angel_core_heights_read_as_weak_points() {
+        assert!(angel_core_height(Some(AlienKind::Splinter)) > angel_core_height(Some(AlienKind::Mass)));
+        assert!(angel_core_height(Some(AlienKind::Mass)) > 0.8);
+        assert!(angel_core_height(None) > 1.0);
     }
 }

@@ -474,6 +474,11 @@ impl Pilot {
     pub fn sync_crit_chance(&self) -> f32 {
         ((self.sync - 0.80) / 0.20).clamp(0.0, 1.0) * 0.25
     }
+
+    /// High sync reads Angel cores / weak points (pattern sight).
+    pub fn can_see_core(&self) -> bool {
+        self.sync >= SYNC_HIGH
+    }
 }
 
 #[cfg(test)]
@@ -533,5 +538,18 @@ mod tests {
         assert!(p.sync_damage_mult() < 0.85);
         assert_eq!(p.sync_band(), SyncBand::Low);
         assert_eq!(p.sync_crit_chance(), 0.0);
+        assert!(!p.can_see_core());
+    }
+
+    #[test]
+    fn only_high_sync_sees_angel_cores() {
+        let mut p = Pilot::new(0, "Nori");
+        assert!(!p.can_see_core());
+        p.sync = SYNC_HIGH - 0.01;
+        assert!(!p.can_see_core());
+        p.sync = SYNC_HIGH;
+        assert!(p.can_see_core());
+        p.sync = 0.95;
+        assert!(p.can_see_core());
     }
 }

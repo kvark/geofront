@@ -69,6 +69,8 @@ pub enum CombatFx {
     AtFieldBreak { target_id: u32 },
     /// Pilot psychology beat (stress spike / refuse / steady) for HUD flash.
     PilotDrama { unit_id: u32, kind: PilotDramaKind },
+    /// High-sync pilot read an Angel core / weak point.
+    CoreFlash { target_id: u32 },
 }
 
 #[derive(Debug)]
@@ -103,7 +105,7 @@ impl Mission {
         mechs[0].pilot_id = Some(0);
         mechs[1].pilot_id = Some(1);
 
-        Self {
+        let mut s = Self {
             grid,
             mechs,
             pilots,
@@ -114,7 +116,10 @@ impl Mission {
             enemy_queue: Vec::new(),
             pending_fx: Vec::new(),
             pilot_flash: None,
-        }
+        };
+        // Default pilots are mid-sync — no-op unless a later setup raises sync.
+        s.maybe_core_telegraph();
+        s
     }
 
     /// Drain presentation FX produced since the last call.
@@ -366,6 +371,10 @@ impl Mission {
                     self.city_hp = (self.city_hp + 2.0).min(100.0);
                 }
                 self.maybe_stress_spike(target_id, limb, before_limb, before_near);
+                // High sync locks the core on the Angel they just read.
+                if matches!(team, Team::Player) {
+                    self.maybe_core_flash_target(attacker_id, target_id);
+                }
             }
             Action::Wait { unit_id } => {
                 let team = self.team_of(unit_id).ok_or("Unknown unit")?;
@@ -504,6 +513,98 @@ impl Mission {
     /// Deterministic 0–1 roll for sync crits (stable in tests / autoplay).
     fn sync_roll(turn: u32, unit_id: u32) -> f32 {
         ((turn.wrapping_mul(31) + unit_id.wrapping_mul(13)) % 100) as f32 / 100.0
+    }
+
+    /// First living player whose pilot is high-sync (pattern sight).
+    fn first_high_sync_viewer(&self) -> Option<(u32, String, f32)> {
+        for mech in self.living_mechs(Team::Player) {
+            let Some(pid) = mech.pilot_id else {
+                continue;
+            };
+            let Some(pilot) = self.pilot(pid) else {
+                continue;
+            };
+            if pilot.can_see_core() {
+                return Some((mech.id, pilot.name.clone(), pilot.sync));
+            }
+        }
+        None
+    }
+
+    /// Living Angel ids + names (Splinter / Mass).
+    fn living_angels(&self) -> Vec<(u32, String)> {
+        self.mechs
+            .iter()
+            .filter(|m| !m.destroyed && m.alien.is_some())
+            .map(|m| (m.id, m.name.clone()))
+            .collect()
+    }
+
+    /// If any living player is high-sync, flash living Angel cores + log.
+    pub fn maybe_core_telegraph(&mut self) {
+        let Some((_viewer_id, pilot_name, sync)) = self.first_high_sync_viewer() else {
+            return;
+        };
+        let angels = self.living_angels();
+        if angels.is_empty() {
+            return;
+        }
+        let names: Vec<&str> = angels.iter().map(|(_, n)| n.as_str()).collect();
+        let list = names.join(", ");
+        let cores = if angels.len() == 1 { "core" } else { "cores" };
+        let sync_pct = (sync * 100.0).round();
+        let line = format!(
+            "{pilot_name} sees the pattern (sync {sync_pct:.0}%) — {list} {cores} flash."
+        );
+        for (id, _) in &angels {
+            self.pending_fx.push(CombatFx::CoreFlash { target_id: *id });
+        }
+        log::info!("CORE_TELEGRAPH: {line}");
+        self.log.push(line);
+    }
+
+    /// High-sync attacker reads the targeted Angel's core (strike lock-on).
+    fn maybe_core_flash_target(&mut self, attacker_id: u32, target_id: u32) {
+        let Some(attacker) = self.mech(attacker_id) else {
+            return;
+        };
+        if !matches!(attacker.team, Team::Player) {
+            return;
+        }
+        let Some(pid) = attacker.pilot_id else {
+            return;
+        };
+        let Some(pilot) = self.pilot(pid) else {
+            return;
+        };
+        if !pilot.can_see_core() {
+            return;
+        }
+        let pilot_name = pilot.name.clone();
+        let sync = pilot.sync;
+        let Some(target) = self.mech(target_id) else {
+            return;
+        };
+        if target.alien.is_none() {
+            return;
+        }
+        let target_name = target.name.clone();
+        // Skip a second log if this turn already announced the pattern.
+        let already = self
+            .log
+            .iter()
+            .any(|l| l.contains("sees the pattern"));
+        self.pending_fx.push(CombatFx::CoreFlash {
+            target_id,
+        });
+        if !already {
+            let sync_pct = (sync * 100.0).round();
+            let line = format!(
+                "{pilot_name} sees the pattern (sync {sync_pct:.0}%) — {target_name} core flashes."
+            );
+            log::info!("CORE_TELEGRAPH: {line}");
+            self.log.push(line);
+        }
     }
 
     fn refresh_team(&mut self, team: Team) {
@@ -701,6 +802,7 @@ impl Mission {
             ));
         }
         self.log.push(format!("Turn {} — your move.", self.turn));
+        self.maybe_core_telegraph();
     }
 
     /// Instant full enemy resolution (smoke tests / skip anim).
@@ -1401,6 +1503,148 @@ mod tests {
         assert!(
             m.is_won(),
             "expected victory with sync buffs/penalties; log={:?}",
+            m.log
+        );
+    }
+
+    #[test]
+    fn default_skirmish_does_not_telegraph_cores() {
+        let m = Mission::new_skirmish();
+        assert!(
+            m.pending_fx
+                .iter()
+                .all(|fx| !matches!(fx, CombatFx::CoreFlash { .. })),
+            "mid sync should not see cores at start; fx={:?}",
+            m.pending_fx
+        );
+        assert!(m.log.iter().all(|l| !l.contains("sees the pattern")));
+    }
+
+    #[test]
+    fn high_sync_telegraphs_angel_cores() {
+        let mut m = Mission::new_skirmish();
+        m.pilot_mut(0).unwrap().sync = 0.95;
+        m.maybe_core_telegraph();
+        let flashes: Vec<u32> = m
+            .pending_fx
+            .iter()
+            .filter_map(|fx| match fx {
+                CombatFx::CoreFlash { target_id } => Some(*target_id),
+                _ => None,
+            })
+            .collect();
+        assert!(flashes.contains(&10), "Splinter core; fx={:?}", m.pending_fx);
+        assert!(flashes.contains(&11), "Mass core; fx={:?}", m.pending_fx);
+        assert!(
+            m.log
+                .iter()
+                .any(|l| l.contains("sees the pattern")
+                    && l.contains("Splinter")
+                    && l.contains("Mass")),
+            "log: {:?}",
+            m.log
+        );
+    }
+
+    #[test]
+    fn low_sync_does_not_see_cores() {
+        let mut m = Mission::new_skirmish();
+        m.pilot_mut(0).unwrap().sync = 0.30;
+        m.pilot_mut(1).unwrap().sync = 0.40;
+        m.maybe_core_telegraph();
+        assert!(
+            m.pending_fx
+                .iter()
+                .all(|fx| !matches!(fx, CombatFx::CoreFlash { .. })),
+            "fx: {:?}",
+            m.pending_fx
+        );
+        assert!(m.log.iter().all(|l| !l.contains("sees the pattern")));
+    }
+
+    #[test]
+    fn high_sync_attack_flashes_target_core() {
+        let mut m = Mission::new_skirmish();
+        m.pilot_mut(0).unwrap().sync = 0.95;
+        m.apply_action(Action::Attack {
+            attacker_id: 0,
+            target_id: 10,
+            limb: LimbKind::Torso,
+        })
+        .unwrap();
+        assert!(
+            m.pending_fx
+                .iter()
+                .any(|fx| matches!(fx, CombatFx::CoreFlash { target_id: 10 })),
+            "high sync strike should flash Splinter core; fx={:?}",
+            m.pending_fx
+        );
+        assert!(
+            m.log.iter().any(|l| l.contains("sees the pattern")),
+            "log: {:?}",
+            m.log
+        );
+    }
+
+    #[test]
+    fn low_sync_attack_does_not_flash_core() {
+        let mut m = Mission::new_skirmish();
+        m.pilot_mut(0).unwrap().sync = 0.30;
+        m.apply_action(Action::Attack {
+            attacker_id: 0,
+            target_id: 10,
+            limb: LimbKind::Torso,
+        })
+        .unwrap();
+        assert!(
+            m.pending_fx
+                .iter()
+                .all(|fx| !matches!(fx, CombatFx::CoreFlash { .. })),
+            "fx: {:?}",
+            m.pending_fx
+        );
+    }
+
+    #[test]
+    fn destroyed_angel_is_not_telegraphed() {
+        let mut m = Mission::new_skirmish();
+        m.pilot_mut(0).unwrap().sync = 0.95;
+        m.mech_mut(10).unwrap().destroyed = true;
+        m.maybe_core_telegraph();
+        let flashes: Vec<u32> = m
+            .pending_fx
+            .iter()
+            .filter_map(|fx| match fx {
+                CombatFx::CoreFlash { target_id } => Some(*target_id),
+                _ => None,
+            })
+            .collect();
+        assert!(!flashes.contains(&10));
+        assert!(flashes.contains(&11));
+        assert!(
+            m.log
+                .iter()
+                .any(|l| l.contains("Mass") && !l.contains("Splinter")),
+            "log: {:?}",
+            m.log
+        );
+    }
+
+    #[test]
+    fn autoplay_style_still_wins_with_core_telegraph() {
+        let mut m = Mission::new_skirmish();
+        m.pilot_mut(0).unwrap().sync = 0.95;
+        m.pilot_mut(1).unwrap().sync = 0.90;
+        m.maybe_core_telegraph();
+        autoplay_loop(&mut m, 20);
+        assert!(
+            m.is_won(),
+            "expected victory with core telegraph; log={:?}",
+            m.log
+        );
+        assert!(
+            m.log.iter().any(|l| l.contains("sees the pattern")),
+            "high sync autoplay should log pattern sight; log={:?}",
             m.log
         );
     }
