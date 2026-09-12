@@ -282,7 +282,7 @@ fn battle_panel(
                 if sees {
                     cols[1].colored_label(
                         egui::Color32::from_rgb(220, 190, 255),
-                        "core visible — high sync reads the pattern",
+                        "core visible — high sync core strike",
                     );
                 }
             }

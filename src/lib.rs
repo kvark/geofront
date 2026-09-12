@@ -918,8 +918,14 @@ impl Game {
 
     fn drain_combat_fx(&mut self) {
         for fx in self.mission.take_fx() {
-            if let CombatFx::CoreFlash { target_id } = fx {
-                self.arena.spawn_core_flash(target_id);
+            match fx {
+                CombatFx::CoreFlash { target_id } => {
+                    self.arena.spawn_core_flash(target_id);
+                }
+                CombatFx::CoreCrack { target_id } => {
+                    self.arena.spawn_core_crack(target_id);
+                }
+                _ => {}
             }
         }
     }

@@ -71,6 +71,8 @@ pub enum CombatFx {
     PilotDrama { unit_id: u32, kind: PilotDramaKind },
     /// High-sync pilot read an Angel core / weak point.
     CoreFlash { target_id: u32 },
+    /// High-sync strike cracked a visible Angel core (sharper FX).
+    CoreCrack { target_id: u32 },
 }
 
 #[derive(Debug)]
@@ -292,7 +294,14 @@ impl Mission {
                 }
 
                 // Pilot–mech sync: high sync buffs damage / opens crits; low sync weakens.
+                // High sync + Angel target: proportional core-strike bonus (pattern sight).
+                let target_is_angel = self
+                    .mech(target_id)
+                    .map(|t| t.alien.is_some())
+                    .unwrap_or(false);
                 let mut sync_tag = String::new();
+                let mut core_strike = false;
+                let mut core_pilot_name = String::new();
                 if matches!(team, Team::Player) {
                     if let Some(pid) = pilot_id {
                         if let Some(pilot) = self.pilot(pid) {
@@ -304,18 +313,35 @@ impl Mission {
                             if crit {
                                 dmg *= SYNC_CRIT_MULT;
                             }
+                            let mut core_mult = 1.0;
+                            if target_is_angel && pilot.can_see_core() {
+                                core_mult = pilot.core_strike_mult();
+                                dmg *= core_mult;
+                                core_strike = true;
+                                core_pilot_name = pilot.name.clone();
+                            }
                             let sync_pct = (pilot.sync * 100.0).round();
-                            sync_tag = match (pilot.sync_band(), crit) {
-                                (_, true) => {
+                            sync_tag = match (pilot.sync_band(), crit, core_strike) {
+                                (_, true, true) => {
+                                    format!(
+                                        " — CRIT CORE STRIKE (sync {sync_pct:.0}%, ×{core_mult:.2})"
+                                    )
+                                }
+                                (_, true, false) => {
                                     format!(" — CRIT (sync {sync_pct:.0}%)")
                                 }
-                                (SyncBand::High, false) => {
+                                (SyncBand::High, false, true) => {
+                                    format!(
+                                        " (high sync ×{mult:.2}, core ×{core_mult:.2})"
+                                    )
+                                }
+                                (SyncBand::High, false, false) => {
                                     format!(" (high sync ×{mult:.2})")
                                 }
-                                (SyncBand::Low, false) => {
+                                (SyncBand::Low, false, _) => {
                                     format!(" (low sync ×{mult:.2})")
                                 }
-                                (SyncBand::Mid, false) => String::new(),
+                                (SyncBand::Mid, false, _) => String::new(),
                             };
                         }
                     }
@@ -371,9 +397,25 @@ impl Mission {
                     self.city_hp = (self.city_hp + 2.0).min(100.0);
                 }
                 self.maybe_stress_spike(target_id, limb, before_limb, before_near);
-                // High sync locks the core on the Angel they just read.
+                // Damaging high-sync core strike: sharper crack FX/log.
+                // Absorbed hits still get the softer telegraph flash.
                 if matches!(team, Team::Player) {
-                    self.maybe_core_flash_target(attacker_id, target_id);
+                    if core_strike && !absorbed {
+                        self.pending_fx.push(CombatFx::CoreCrack { target_id });
+                        let sync_pct = self
+                            .mech(attacker_id)
+                            .and_then(|m| m.pilot_id)
+                            .and_then(|pid| self.pilot(pid))
+                            .map(|p| (p.sync * 100.0).round())
+                            .unwrap_or(0.0);
+                        let line = format!(
+                            "{core_pilot_name} cracks {tname}'s core! (sync {sync_pct:.0}%)"
+                        );
+                        log::info!("CORE_CRACK: {line}");
+                        self.log.push(line);
+                    } else {
+                        self.maybe_core_flash_target(attacker_id, target_id);
+                    }
                 }
             }
             Action::Wait { unit_id } => {
@@ -1387,7 +1429,7 @@ mod tests {
                 target_id: 10,
                 limb: LimbKind::Torso,
             });
-            if m.log.iter().any(|l| l.contains("CRIT (sync")) {
+            if m.log.iter().any(|l| l.contains("CRIT")) {
                 crit_seen = true;
                 break;
             }
@@ -1572,15 +1614,16 @@ mod tests {
             limb: LimbKind::Torso,
         })
         .unwrap();
+        // Damaging high-sync hit cracks the core (sharper than telegraph flash).
         assert!(
             m.pending_fx
                 .iter()
-                .any(|fx| matches!(fx, CombatFx::CoreFlash { target_id: 10 })),
-            "high sync strike should flash Splinter core; fx={:?}",
+                .any(|fx| matches!(fx, CombatFx::CoreCrack { target_id: 10 })),
+            "high sync strike should crack Splinter core; fx={:?}",
             m.pending_fx
         );
         assert!(
-            m.log.iter().any(|l| l.contains("sees the pattern")),
+            m.log.iter().any(|l| l.contains("cracks") && l.contains("core")),
             "log: {:?}",
             m.log
         );
@@ -1645,6 +1688,160 @@ mod tests {
         assert!(
             m.log.iter().any(|l| l.contains("sees the pattern")),
             "high sync autoplay should log pattern sight; log={:?}",
+            m.log
+        );
+    }
+
+    #[test]
+    fn high_sync_core_strike_bonus_on_angel() {
+        let mut baseline = Mission::new_skirmish();
+        // Mid sync reference (no core bonus).
+        let before_b = torso_hp(&baseline, 10);
+        baseline
+            .apply_action(Action::Attack {
+                attacker_id: 0,
+                target_id: 10,
+                limb: LimbKind::Torso,
+            })
+            .unwrap();
+        let mid_dealt = before_b - torso_hp(&baseline, 10);
+
+        let mut m = Mission::new_skirmish();
+        m.pilot_mut(0).unwrap().sync = 0.95;
+        let before = torso_hp(&m, 10);
+        m.apply_action(Action::Attack {
+            attacker_id: 0,
+            target_id: 10,
+            limb: LimbKind::Torso,
+        })
+        .unwrap();
+        let dealt = before - torso_hp(&m, 10);
+        // High sync already buffs; core strike should push further past mid.
+        assert!(
+            dealt > mid_dealt * 1.15,
+            "core strike should outpace mid sync; dealt={dealt} mid={mid_dealt}"
+        );
+        assert!(
+            m.pending_fx
+                .iter()
+                .any(|fx| matches!(fx, CombatFx::CoreCrack { target_id: 10 })),
+            "expected CoreCrack FX; fx={:?}",
+            m.pending_fx
+        );
+        assert!(
+            m.log.iter().any(|l| l.contains("cracks") && l.contains("core")),
+            "log: {:?}",
+            m.log
+        );
+        assert!(
+            m.log
+                .iter()
+                .any(|l| l.contains("core ×") || l.contains("CORE STRIKE")),
+            "attack log should tag core strike; {:?}",
+            m.log
+        );
+    }
+
+    #[test]
+    fn mid_sync_no_core_strike_bonus() {
+        let mut m = Mission::new_skirmish();
+        // Default mid sync.
+        assert!(!m.pilot(0).unwrap().can_see_core());
+        let before = torso_hp(&m, 10);
+        m.apply_action(Action::Attack {
+            attacker_id: 0,
+            target_id: 10,
+            limb: LimbKind::Torso,
+        })
+        .unwrap();
+        let dealt = before - torso_hp(&m, 10);
+        assert!((dealt - 28.75).abs() < 0.01, "dealt={dealt}");
+        assert!(
+            m.pending_fx
+                .iter()
+                .all(|fx| !matches!(fx, CombatFx::CoreCrack { .. })),
+            "fx: {:?}",
+            m.pending_fx
+        );
+        assert!(m.log.iter().all(|l| !l.contains("cracks")));
+    }
+
+    #[test]
+    fn low_sync_no_core_strike_bonus() {
+        let mut m = Mission::new_skirmish();
+        m.pilot_mut(0).unwrap().sync = 0.30;
+        m.apply_action(Action::Attack {
+            attacker_id: 0,
+            target_id: 10,
+            limb: LimbKind::Torso,
+        })
+        .unwrap();
+        assert!(
+            m.pending_fx
+                .iter()
+                .all(|fx| !matches!(fx, CombatFx::CoreCrack { .. })),
+            "fx: {:?}",
+            m.pending_fx
+        );
+        assert!(m.log.iter().all(|l| !l.contains("cracks")));
+        assert!(m.log.iter().all(|l| !l.contains("CORE STRIKE")));
+    }
+
+    #[test]
+    fn core_strike_skips_when_at_field_absorbs() {
+        let mut m = Mission::new_skirmish();
+        m.pilot_mut(0).unwrap().sync = 0.95;
+        // Move Coil in range of Mass (id 11) and strike — AT Field absorbs.
+        m.mech_mut(0).unwrap().position = IVec2::new(5, 4);
+        m.mech_mut(0).unwrap().facing = Facing::North;
+        m.apply_action(Action::Attack {
+            attacker_id: 0,
+            target_id: 11,
+            limb: LimbKind::Torso,
+        })
+        .unwrap();
+        assert!(
+            m.pending_fx
+                .iter()
+                .any(|fx| matches!(fx, CombatFx::AtFieldAbsorb { target_id: 11 })),
+            "fx: {:?}",
+            m.pending_fx
+        );
+        assert!(
+            m.pending_fx
+                .iter()
+                .all(|fx| !matches!(fx, CombatFx::CoreCrack { .. })),
+            "absorb should not crack; fx={:?}",
+            m.pending_fx
+        );
+        // Soft telegraph flash still allowed.
+        assert!(
+            m.pending_fx
+                .iter()
+                .any(|fx| matches!(fx, CombatFx::CoreFlash { target_id: 11 })),
+            "fx: {:?}",
+            m.pending_fx
+        );
+        assert!(m.log.iter().all(|l| !l.contains("cracks")));
+    }
+
+    #[test]
+    fn autoplay_style_still_wins_with_core_strike() {
+        let mut m = Mission::new_skirmish();
+        m.pilot_mut(0).unwrap().sync = 0.95;
+        m.pilot_mut(1).unwrap().sync = 0.90;
+        m.maybe_core_telegraph();
+        autoplay_loop(&mut m, 20);
+        assert!(
+            m.is_won(),
+            "expected victory with core strike bonus; log={:?}",
+            m.log
+        );
+        assert!(
+            m.log
+                .iter()
+                .any(|l| l.contains("cracks") && l.contains("core")),
+            "high sync autoplay should crack at least one core; log={:?}",
             m.log
         );
     }
