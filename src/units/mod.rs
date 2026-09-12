@@ -479,6 +479,17 @@ impl Pilot {
     pub fn can_see_core(&self) -> bool {
         self.sync >= SYNC_HIGH
     }
+
+    /// Extra damage when striking a visible Angel core (Splinter / Mass).
+    /// Mid/low sync: 1.0×. At SYNC_HIGH: ~1.12×; at full sync: ~1.25×.
+    pub fn core_strike_mult(&self) -> f32 {
+        if !self.can_see_core() {
+            return 1.0;
+        }
+        let span = (1.0 - SYNC_HIGH).max(1e-4);
+        let t = ((self.sync - SYNC_HIGH) / span).clamp(0.0, 1.0);
+        1.12 + 0.13 * t
+    }
 }
 
 #[cfg(test)]
@@ -551,5 +562,20 @@ mod tests {
         assert!(p.can_see_core());
         p.sync = 0.95;
         assert!(p.can_see_core());
+    }
+
+    #[test]
+    fn core_strike_mult_only_when_high_sync() {
+        let mut p = Pilot::new(0, "Nori");
+        assert!((p.core_strike_mult() - 1.0).abs() < 1e-5);
+        p.sync = SYNC_LOW;
+        assert!((p.core_strike_mult() - 1.0).abs() < 1e-5);
+        p.sync = SYNC_HIGH;
+        let at_high = p.core_strike_mult();
+        assert!(at_high > 1.10 && at_high < 1.15, "at_high={at_high}");
+        p.sync = 1.0;
+        let at_full = p.core_strike_mult();
+        assert!(at_full > at_high, "full={at_full} high={at_high}");
+        assert!((at_full - 1.25).abs() < 1e-5, "at_full={at_full}");
     }
 }

@@ -43,10 +43,10 @@ film stills.
 | Layer | Direction |
 | --- | --- |
 | Combat | Turn-based on grid: move points then one action; facing; limb targeting; sequential enemy phase |
-| Aliens | Splinter kite + Mass pressure; Mass AT Field absorbs first hits; Angel FX until real art; high-sync core telegraph |
+| Aliens | Splinter kite + Mass pressure; Mass AT Field absorbs first hits; Angel FX until real art; high-sync core telegraph + core-strike bonus |
 | City | Destructible / living city ahead; collateral already affects protection % |
 | Base | Underground hangar is a stage today; facility sandbox is the roadmap |
-| Pilots | Sync / loyalty / stress already on HUD; high sync buffs damage and reads Angel cores; portraits, dialogs, disobedience next |
+| Pilots | Sync / loyalty / stress already on HUD; high sync buffs damage, reads Angel cores, and core-strikes for bonus damage; portraits, dialogs, disobedience next |
 
 ## Non-goals
 
@@ -62,5 +62,5 @@ When judging a build under lavapipe:
 1. Does the mid-battle shot read as **dusk canyon** (warm key, cool fill, sky glow)?
 2. Do **sodium / neon** pools and window glitter sell night city?
 3. Are player mechs **readable heroes**, not grain silhouettes?
-4. Do Angels read vs mechs (silhouette/FX, AT Field cyan cage, high-sync core flash) without new meshes?
+4. Do Angels read vs mechs (silhouette/FX, AT Field cyan cage, high-sync core flash / crack) without new meshes?
 5. Does `GEOFRONT_AUTOPLAY=1` still reach **VICTORY**?

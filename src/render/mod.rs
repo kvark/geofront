@@ -31,6 +31,8 @@ const IMPACT_FLASH_SECS: f32 = 0.32;
 const IMPACT_PUNCH_SECS: f32 = 0.16;
 /// Brief high-sync Angel core / weak-point flash.
 const CORE_FLASH_SECS: f32 = 0.48;
+/// Sharper core-crack pulse when a high-sync strike lands on an Angel.
+const CORE_CRACK_SECS: f32 = 0.72;
 
 /// 1 at onset, quadratic falloff — lights, tints, and camera punch share this.
 pub fn impact_envelope(remaining: f32, duration: f32) -> f32 {
@@ -463,6 +465,31 @@ impl Arena {
         });
     }
 
+    /// Sharper core-crack when a high-sync strike lands on a visible Angel core.
+    pub fn spawn_core_crack(&mut self, target_id: u32) {
+        self.core_pulse
+            .entry(target_id)
+            .and_modify(|t| *t = (*t).max(CORE_CRACK_SECS))
+            .or_insert(CORE_CRACK_SECS);
+        let kind = self.visuals.get(&target_id).and_then(|v| v.alien);
+        let height = angel_core_height(kind);
+        let pos = self
+            .visuals
+            .get(&target_id)
+            .map(|v| v.pos + Vec3::Y * height)
+            .unwrap_or(Vec3::Y * height);
+        self.impact_flashes.push(ImpactFlash {
+            pos,
+            t: CORE_CRACK_SECS,
+            duration: CORE_CRACK_SECS,
+            dir: Vec3::Y,
+            at_field: false,
+            kind,
+        });
+        // Extra camera kick — crack should feel sharper than a telegraph flash.
+        self.punch_t = self.punch_t.max(IMPACT_PUNCH_SECS * 1.35);
+    }
+
     pub fn camera_punch(&self) -> f32 {
         self.punch_t
     }
@@ -570,20 +597,23 @@ impl Arena {
                     5.5,
                 );
             }
-            // High-sync core flashes — tight, bright, short (wins a slot after impact).
+            // High-sync core flashes / cracks — tight, bright (wins a slot after impact).
             for (&id, &remain) in &self.core_pulse {
                 let Some(vis) = self.visuals.get(&id) else {
                     continue;
                 };
-                let k = (remain / CORE_FLASH_SECS).clamp(0.0, 1.0);
+                let k = (remain / CORE_CRACK_SECS).clamp(0.0, 1.0);
                 let pal = strike_palette(vis.alien);
                 let h = angel_core_height(vis.alien);
+                // Crack (longer remain) reads hotter; telegraph flash is milder.
+                let hot = if remain > CORE_FLASH_SECS { 780.0 } else { 420.0 };
+                let range = if remain > CORE_FLASH_SECS { 5.6 } else { 4.2 };
                 push(
                     &mut lights,
                     [vis.pos.x, h, vis.pos.z],
                     pal.telegraph,
-                    420.0 * k * k,
-                    4.2,
+                    hot * k * k,
+                    range,
                 );
             }
             for vis in self.visuals.values() {
@@ -1115,7 +1145,7 @@ fn draw_angel_silhouettes(
         };
         let pulse = core_pulses
             .get(&mech.id)
-            .map(|t| (*t / CORE_FLASH_SECS).clamp(0.0, 1.0))
+            .map(|t| (*t / CORE_CRACK_SECS).clamp(0.0, 1.0))
             .unwrap_or(0.0);
         let charge = (charge + 0.55 * pulse).min(1.0);
         match kind {
@@ -1251,23 +1281,27 @@ fn push_angel_core(
     };
     let (color, radius) = match kind {
         AlienKind::Splinter => {
-            let c = if pulse > 0.15 {
+            let c = if pulse > 0.55 {
+                0xFF_FF_FF_FF
+            } else if pulse > 0.15 {
                 0xFF_FF_EE_FF
             } else {
                 0xFF_DD_88_FF
             };
-            (c, 0.20 + 0.28 * pulse)
+            (c, 0.20 + 0.36 * pulse)
         }
         AlienKind::Mass => {
-            let c = if pulse > 0.15 {
+            let c = if pulse > 0.55 {
+                0xFF_FF_EE_DD
+            } else if pulse > 0.15 {
                 0xFF_FF_CC_AA
             } else {
                 0xFF_CC_66_44
             };
-            (c, 0.26 + 0.32 * pulse)
+            (c, 0.26 + 0.40 * pulse)
         }
     };
-    let spokes = 6;
+    let spokes = if pulse > 0.55 { 8 } else { 6 };
     for i in 0..spokes {
         let a = (i as f32) * std::f32::consts::TAU / spokes as f32 + pulse * 2.4;
         let lift = if i % 2 == 0 { 0.22 } else { -0.10 };
