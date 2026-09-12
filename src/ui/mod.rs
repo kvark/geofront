@@ -105,8 +105,24 @@ fn battle_panel(
         for m in mission.mechs.iter().filter(|m| m.team == Team::Player) {
             let selected = *selected_player == m.id;
             let (hp, max) = m.total_hp();
+            let stressed = m
+                .pilot_id
+                .and_then(|id| mission.pilot(id))
+                .map(|p| p.pending_refuse)
+                .unwrap_or(false);
             let label = if m.destroyed {
                 format!("{} (destroyed)", m.name)
+            } else if stressed {
+                format!(
+                    "{} {}  ({},{})  {:.0}/{:.0}  MP{}  ⚠",
+                    m.name,
+                    m.facing.label(),
+                    m.position.x,
+                    m.position.y,
+                    hp,
+                    max,
+                    m.move_left
+                )
             } else {
                 format!(
                     "{} {}  ({},{})  {:.0}/{:.0}  MP{}",
@@ -125,13 +141,28 @@ fn battle_panel(
             if selected && !m.destroyed {
                 if let Some(pid) = m.pilot_id {
                     if let Some(p) = mission.pilot(pid) {
-                        cols[0].label(format!(
-                            "Pilot {}  sync {:.0}%  loyalty {:.0}%  stress {:.0}%",
-                            p.name,
-                            p.sync * 100.0,
-                            p.loyalty * 100.0,
-                            p.stress * 100.0
-                        ));
+                        cols[0].horizontal(|ui| {
+                            ui.label(format!("Pilot {}", p.name));
+                            ui.label(format!("sync {:.0}%", p.sync * 100.0));
+                            ui.label(format!("loyalty {:.0}%", p.loyalty * 100.0));
+                            let stress_color = if p.stress >= 0.6 {
+                                egui::Color32::from_rgb(255, 90, 90)
+                            } else if p.stress >= 0.3 {
+                                egui::Color32::YELLOW
+                            } else {
+                                egui::Color32::LIGHT_GREEN
+                            };
+                            ui.colored_label(
+                                stress_color,
+                                format!("stress {:.0}%", p.stress * 100.0),
+                            );
+                        });
+                        if p.pending_refuse {
+                            cols[0].colored_label(
+                                egui::Color32::from_rgb(255, 170, 70),
+                                "⚠ stressed — may refuse next order",
+                            );
+                        }
                     }
                 }
                 cols[0].indent("limbs", |ui| {
@@ -207,9 +238,8 @@ fn battle_panel(
 
     ui.separator();
 
-    let can_act = matches!(mission.phase, TurnPhase::Player)
-        && !mission.is_won()
-        && !mission.is_lost();
+    let can_act =
+        matches!(mission.phase, TurnPhase::Player) && !mission.is_won() && !mission.is_lost();
     let mech = mission.mech(*selected_player);
     let can_move = can_act && mech.map(|m| m.can_move()).unwrap_or(false);
     let can_fire = can_act && mech.map(|m| m.can_act()).unwrap_or(false);
@@ -218,7 +248,8 @@ fn battle_panel(
     ui.horizontal(|ui| {
         let mut pick = None;
         let step = |ui: &mut egui::Ui, label: &str, dir: Facing, enabled: bool| {
-            ui.add_enabled(enabled, egui::Button::new(label)).clicked()
+            ui.add_enabled(enabled, egui::Button::new(label))
+                .clicked()
                 .then_some(HudAction::Step(dir))
         };
         pick = pick.or(step(ui, "N", Facing::North, can_move));
@@ -310,7 +341,9 @@ fn city_panel(ui: &mut egui::Ui, mode: ViewMode) {
         ViewMode::Battle => "",
     });
     ui.separator();
-    ui.label("Click the city, then WASD / drag. View buttons switch surface, underground, and battle.");
+    ui.label(
+        "Click the city, then WASD / drag. View buttons switch surface, underground, and battle.",
+    );
 }
 
 #[derive(Debug, Clone)]

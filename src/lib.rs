@@ -10,7 +10,7 @@ mod world;
 
 use std::path::PathBuf;
 
-use combat::{Action, Mission};
+use combat::{Action, ApplyResult, Mission};
 use log::info;
 use units::LimbKind;
 use winit::{
@@ -89,7 +89,7 @@ fn assets_dir() -> PathBuf {
 /// Embed `assets/` into Blade's VFS so WASM can load shaders/models without a filesystem.
 #[cfg(target_arch = "wasm32")]
 fn mount_embedded_assets() {
-    use include_dir::{Dir, include_dir};
+    use include_dir::{include_dir, Dir};
     static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets");
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
     fn walk(dir: &Dir, root: &std::path::Path) {
@@ -207,7 +207,10 @@ impl Game {
             web_sys::window()
                 .and_then(|win| win.document())
                 .and_then(|doc| doc.body())
-                .and_then(|body| body.append_child(&web_sys::Element::from(canvas.clone())).ok())
+                .and_then(|body| {
+                    body.append_child(&web_sys::Element::from(canvas.clone()))
+                        .ok()
+                })
                 .expect("couldn't append canvas");
             canvas.set_tab_index(0);
             let _ = canvas.focus();
@@ -277,8 +280,14 @@ impl Game {
 
         let egui_context = egui::Context::default();
         egui_context.set_visuals(egui::Visuals::dark());
-        let egui_state =
-            egui_winit::State::new(egui_context, egui::ViewportId::ROOT, &window, None, None, None);
+        let egui_state = egui_winit::State::new(
+            egui_context,
+            egui::ViewportId::ROOT,
+            &window,
+            None,
+            None,
+            None,
+        );
 
         let mission = Mission::new_skirmish();
         let view_mode = initial_view_mode();
@@ -297,6 +306,7 @@ impl Game {
             let floor = 200.0_f32;
             quit_after = Some(quit_after.map(|t| f32::max(t, floor)).unwrap_or(floor));
         }
+
         let arena = render::Arena::spawn(&mut engine, view_mode, &mission);
         let fly = render::FlyCam::for_mode(view_mode);
 
@@ -377,7 +387,8 @@ impl Game {
             }
             let _ = js_sys::Reflect::set(&ptr, &JsValue::from_str("dx"), &JsValue::from_f64(0.0));
             let _ = js_sys::Reflect::set(&ptr, &JsValue::from_str("dy"), &JsValue::from_f64(0.0));
-            let _ = js_sys::Reflect::set(&ptr, &JsValue::from_str("wheel"), &JsValue::from_f64(0.0));
+            let _ =
+                js_sys::Reflect::set(&ptr, &JsValue::from_str("wheel"), &JsValue::from_f64(0.0));
         }
         if let Ok(view) = js_sys::Reflect::get(&window, &JsValue::from_str("__gfView")) {
             if let Some(s) = view.as_string() {
@@ -666,7 +677,6 @@ impl Game {
         false
     }
 
-
     /// Scripted skirmish for lavapipe: warm up, attack, end turn, until VICTORY/DEFEAT.
     fn tick_autoplay(&mut self, dt: f32) {
         if self.view_mode != render::ViewMode::Battle {
@@ -768,7 +778,7 @@ impl Game {
                     target_id: target,
                     limb,
                 }) {
-                    Ok(()) => {
+                    Ok(ApplyResult::Done) => {
                         let profile = self
                             .mission
                             .mech(attacker)
@@ -792,6 +802,9 @@ impl Game {
                         } else {
                             self.impact_timer = profile.total().max(1.0);
                         }
+                    }
+                    Ok(ApplyResult::Skipped) => {
+                        // Pilot locked up — log already records the refuse.
                     }
                     Err(e) => {
                         self.mission.log.push(format!("Attack failed: {e}"));

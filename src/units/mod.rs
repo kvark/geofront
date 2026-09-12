@@ -2,6 +2,17 @@
 
 use glam::IVec2;
 
+/// Limb HP ratio at or below this is a wrecked limb (stress trigger).
+pub const HEAVY_LIMB_RATIO: f32 = 0.25;
+/// Torso HP ratio that counts as near-death.
+pub const NEAR_DEATH_TORSO_RATIO: f32 = 0.30;
+/// Whole-mech HP ratio that counts as near-death.
+pub const NEAR_DEATH_TOTAL_RATIO: f32 = 0.35;
+/// Stress added on a trauma spike.
+pub const STRESS_SPIKE: f32 = 0.35;
+/// Sync lost on a trauma spike (floor 0.2).
+pub const SYNC_DIP: f32 = 0.06;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LimbKind {
     Torso,
@@ -335,6 +346,28 @@ impl Mech {
         (cur, max)
     }
 
+    pub fn limb_ratio(&self, kind: LimbKind) -> f32 {
+        self.limbs
+            .iter()
+            .find(|l| l.kind == kind)
+            .map(Limb::damage_ratio)
+            .unwrap_or(0.0)
+    }
+
+    pub fn total_hp_ratio(&self) -> f32 {
+        let (cur, max) = self.total_hp();
+        if max <= 0.0 {
+            0.0
+        } else {
+            (cur / max).clamp(0.0, 1.0)
+        }
+    }
+
+    pub fn is_near_death(&self) -> bool {
+        self.limb_ratio(LimbKind::Torso) <= NEAR_DEATH_TORSO_RATIO
+            || self.total_hp_ratio() <= NEAR_DEATH_TOTAL_RATIO
+    }
+
     pub fn attack_range(&self) -> i32 {
         if self.firepower() <= 0.05 {
             return 1;
@@ -363,6 +396,8 @@ pub struct Pilot {
     pub sync: f32,
     pub loyalty: f32,
     pub stress: f32,
+    /// After a trauma spike, the next order may be refused once.
+    pub pending_refuse: bool,
 }
 
 impl Pilot {
@@ -373,11 +408,63 @@ impl Pilot {
             sync: 0.7,
             loyalty: 0.8,
             stress: 0.1,
+            pending_refuse: false,
         }
     }
 
     pub fn disobedience_chance(&self) -> f32 {
         let pressure = self.stress * (1.0 - self.loyalty) * (1.0 - self.sync);
         pressure.clamp(0.0, 0.6)
+    }
+
+    /// Chance to skip the next order. Zero unless a spike armed `pending_refuse`.
+    pub fn refuse_chance(&self) -> f32 {
+        if !self.pending_refuse {
+            return 0.0;
+        }
+        // Visible Eva beat (~20–55%) that still respects loyalty / sync.
+        let panic = 0.22 + 0.45 * self.stress * (1.15 - self.loyalty) * (1.1 - 0.5 * self.sync);
+        panic.clamp(0.18, 0.55)
+    }
+
+    /// Spike stress after a wrecked limb or near-death; arm a one-shot refuse.
+    pub fn spike_from_hit(&mut self) {
+        self.stress = (self.stress + STRESS_SPIKE).clamp(0.0, 1.0);
+        self.sync = (self.sync - SYNC_DIP).clamp(0.2, 1.0);
+        self.pending_refuse = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_pilot_does_not_refuse() {
+        let p = Pilot::new(0, "Nori");
+        assert_eq!(p.refuse_chance(), 0.0);
+        assert!(p.disobedience_chance() < 0.02);
+        assert!(!p.pending_refuse);
+    }
+
+    #[test]
+    fn trauma_spike_arms_refuse() {
+        let mut p = Pilot::new(0, "Nori");
+        let sync0 = p.sync;
+        p.spike_from_hit();
+        assert!(p.pending_refuse);
+        assert!((p.stress - 0.45).abs() < 1e-5);
+        assert!(p.sync < sync0);
+        assert!(p.refuse_chance() >= 0.18);
+        assert!(p.refuse_chance() <= 0.55);
+    }
+
+    #[test]
+    fn near_death_from_torso() {
+        let mut m = Mech::new_player(0, "Coil", IVec2::new(0, 0));
+        assert!(!m.is_near_death());
+        m.apply_damage(LimbKind::Torso, 75.0);
+        assert!(m.limb_ratio(LimbKind::Torso) <= NEAR_DEATH_TORSO_RATIO);
+        assert!(m.is_near_death());
     }
 }
