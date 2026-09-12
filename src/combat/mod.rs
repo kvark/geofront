@@ -1,7 +1,7 @@
 //! Turn manager, actions, telegraphs (optional), external support requests.
 
+use crate::units::{AlienKind, Facing, LimbKind, Mech, Pilot, Team, HEAVY_LIMB_RATIO};
 use glam::IVec2;
-use crate::units::{AlienKind, Facing, LimbKind, Mech, Pilot, Team};
 
 #[derive(Debug)]
 pub struct Grid {
@@ -32,10 +32,29 @@ pub enum TurnPhase {
 #[derive(Debug, Clone)]
 pub enum Action {
     /// One orthogonal step.
-    Move { unit_id: u32, to: IVec2 },
-    Rotate { unit_id: u32, facing: Facing },
-    Attack { attacker_id: u32, target_id: u32, limb: LimbKind },
-    Wait { unit_id: u32 },
+    Move {
+        unit_id: u32,
+        to: IVec2,
+    },
+    Rotate {
+        unit_id: u32,
+        facing: Facing,
+    },
+    Attack {
+        attacker_id: u32,
+        target_id: u32,
+        limb: LimbKind,
+    },
+    Wait {
+        unit_id: u32,
+    },
+}
+
+/// Outcome of a legal order. `Skipped` is a pilot refuse (unit locks up).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyResult {
+    Done,
+    Skipped,
 }
 
 /// One-shot presentation hooks drained by the battle view after `apply_action`.
@@ -113,6 +132,10 @@ impl Mission {
         self.pilots.iter().find(|p| p.id == id)
     }
 
+    pub fn pilot_mut(&mut self, id: u32) -> Option<&mut Pilot> {
+        self.pilots.iter_mut().find(|p| p.id == id)
+    }
+
     pub fn is_won(&self) -> bool {
         self.living_mechs(Team::Enemy).count() == 0
     }
@@ -122,9 +145,9 @@ impl Mission {
     }
 
     pub fn occupied(&self, pos: IVec2, ignore_id: Option<u32>) -> bool {
-        self.mechs.iter().any(|m| {
-            !m.destroyed && m.position == pos && Some(m.id) != ignore_id
-        })
+        self.mechs
+            .iter()
+            .any(|m| !m.destroyed && m.position == pos && Some(m.id) != ignore_id)
     }
 
     fn team_of(&self, id: u32) -> Option<Team> {
@@ -138,7 +161,7 @@ impl Mission {
         }
     }
 
-    pub fn apply_action(&mut self, action: Action) -> Result<(), String> {
+    pub fn apply_action(&mut self, action: Action) -> Result<ApplyResult, String> {
         match action {
             Action::Move { unit_id, to } => {
                 if !self.grid.in_bounds(to) {
@@ -151,15 +174,21 @@ impl Mission {
                 if !self.phase_allows(team) {
                     return Err("Not this team's turn".into());
                 }
+                {
+                    let mech = self.mech(unit_id).ok_or("Unknown unit")?;
+                    if !mech.can_move() {
+                        return Err("No move left".into());
+                    }
+                    let delta = to - mech.position;
+                    if delta.x.abs() + delta.y.abs() != 1 {
+                        return Err("Must step one tile (orthogonal)".into());
+                    }
+                }
+                if matches!(team, Team::Player) && self.try_refuse(unit_id, "step") {
+                    return Ok(ApplyResult::Skipped);
+                }
                 let mech = self.mech_mut(unit_id).ok_or("Unknown unit")?;
-                if !mech.can_move() {
-                    return Err("No move left".into());
-                }
-                let delta = to - mech.position;
-                if delta.x.abs() + delta.y.abs() != 1 {
-                    return Err("Must step one tile (orthogonal)".into());
-                }
-                let facing = Facing::from_delta(delta).unwrap_or(mech.facing);
+                let facing = Facing::from_delta(to - mech.position).unwrap_or(mech.facing);
                 mech.position = to;
                 mech.facing = facing;
                 mech.move_left -= 1;
@@ -176,10 +205,16 @@ impl Mission {
                 if !self.phase_allows(team) {
                     return Err("Not this team's turn".into());
                 }
-                let mech = self.mech_mut(unit_id).ok_or("Unknown unit")?;
-                if mech.destroyed || mech.acted {
-                    return Err("Cannot rotate".into());
+                {
+                    let mech = self.mech(unit_id).ok_or("Unknown unit")?;
+                    if mech.destroyed || mech.acted {
+                        return Err("Cannot rotate".into());
+                    }
                 }
+                if matches!(team, Team::Player) && self.try_refuse(unit_id, "turn") {
+                    return Ok(ApplyResult::Skipped);
+                }
+                let mech = self.mech_mut(unit_id).ok_or("Unknown unit")?;
                 mech.facing = facing;
                 let name = mech.name.clone();
                 let label = facing.label();
@@ -195,7 +230,7 @@ impl Mission {
                     return Err("Not this team's turn".into());
                 }
 
-                let (attacker_pos, facing, firepower, name, range, pilot_id, destroyed) = {
+                let (attacker_pos, facing, firepower, name, range, destroyed) = {
                     let a = self.mech(attacker_id).ok_or("Unknown attacker")?;
                     (
                         a.position,
@@ -203,7 +238,6 @@ impl Mission {
                         a.firepower(),
                         a.name.clone(),
                         a.attack_range(),
-                        a.pilot_id,
                         a.destroyed,
                     )
                 };
@@ -217,23 +251,8 @@ impl Mission {
                     }
                 }
 
-                if matches!(team, Team::Player) {
-                    if let Some(pid) = pilot_id {
-                        if let Some(pilot) = self.pilot(pid) {
-                            let chance = pilot.disobedience_chance();
-                            let roll = ((self.turn.wrapping_mul(17) + attacker_id) % 100) as f32
-                                / 100.0;
-                            if chance > 0.02 && roll < chance {
-                                if let Some(a) = self.mech_mut(attacker_id) {
-                                    a.acted = true;
-                                }
-                                self.log.push(format!(
-                                    "{name} hesitates (sync break) and holds fire."
-                                ));
-                                return Ok(());
-                            }
-                        }
-                    }
+                if matches!(team, Team::Player) && self.try_refuse(attacker_id, "attack") {
+                    return Ok(ApplyResult::Skipped);
                 }
 
                 let target = self.mech_mut(target_id).ok_or("Unknown target")?;
@@ -246,12 +265,17 @@ impl Mission {
                     return Err("Out of range".into());
                 }
                 let look = facing.delta();
-                let toward = IVec2::new((tpos.x - attacker_pos.x).signum(), (tpos.y - attacker_pos.y).signum());
+                let toward = IVec2::new(
+                    (tpos.x - attacker_pos.x).signum(),
+                    (tpos.y - attacker_pos.y).signum(),
+                );
                 let flanked = look != toward && dist > 0;
                 let mut dmg = (25.0 * firepower).max(5.0);
                 if !flanked {
                     dmg *= 1.15;
                 }
+                let before_limb = target.limb_ratio(limb);
+                let before_near = target.is_near_death();
 
                 // AT Field: absorb before limbs. Mass starts with charges.
                 let absorbed = target.try_absorb_at_field();
@@ -298,23 +322,112 @@ impl Mission {
                 if destroyed_t && was_enemy {
                     self.city_hp = (self.city_hp + 2.0).min(100.0);
                 }
+                self.maybe_stress_spike(target_id, limb, before_limb, before_near);
             }
             Action::Wait { unit_id } => {
                 let team = self.team_of(unit_id).ok_or("Unknown unit")?;
                 if !self.phase_allows(team) {
                     return Err("Not this team's turn".into());
                 }
-                let mech = self.mech_mut(unit_id).ok_or("Unknown unit")?;
-                if mech.destroyed {
-                    return Err("Destroyed".into());
+                {
+                    let mech = self.mech(unit_id).ok_or("Unknown unit")?;
+                    if mech.destroyed {
+                        return Err("Destroyed".into());
+                    }
                 }
+                if matches!(team, Team::Player) && self.try_refuse(unit_id, "wait") {
+                    return Ok(ApplyResult::Skipped);
+                }
+                let mech = self.mech_mut(unit_id).ok_or("Unknown unit")?;
                 mech.acted = true;
                 mech.move_left = 0;
                 let name = mech.name.clone();
                 self.log.push(format!("{name} holds position."));
             }
         }
-        Ok(())
+        Ok(ApplyResult::Done)
+    }
+
+    /// Deterministic 0–1 roll so tests and autoplay stay repeatable.
+    fn order_roll(turn: u32, unit_id: u32) -> f32 {
+        ((turn.wrapping_mul(17) + unit_id) % 100) as f32 / 100.0
+    }
+
+    /// If a trauma spike armed a refuse, consume it. Returns true when the order is skipped.
+    fn try_refuse(&mut self, unit_id: u32, order: &str) -> bool {
+        let Some(pid) = self.mech(unit_id).and_then(|m| m.pilot_id) else {
+            return false;
+        };
+        let Some(idx) = self.pilots.iter().position(|p| p.id == pid) else {
+            return false;
+        };
+        if !self.pilots[idx].pending_refuse {
+            return false;
+        }
+        let chance = self.pilots[idx].refuse_chance();
+        let pname = self.pilots[idx].name.clone();
+        let mname = self
+            .mech(unit_id)
+            .map(|m| m.name.clone())
+            .unwrap_or_default();
+        let roll = Self::order_roll(self.turn, unit_id);
+        self.pilots[idx].pending_refuse = false;
+        if chance > 0.0 && roll < chance {
+            if let Some(m) = self.mech_mut(unit_id) {
+                m.acted = true;
+                m.move_left = 0;
+            }
+            self.log
+                .push(format!("{pname} refuses the {order} — {mname} locks up."));
+            true
+        } else {
+            self.log
+                .push(format!("{pname} steadies and follows the {order}."));
+            false
+        }
+    }
+
+    /// Spike player-pilot stress when a limb is wrecked or the mech is near death.
+    fn maybe_stress_spike(
+        &mut self,
+        target_id: u32,
+        limb: LimbKind,
+        before_limb: f32,
+        before_near: bool,
+    ) {
+        let Some(mech) = self.mech(target_id) else {
+            return;
+        };
+        if !matches!(mech.team, Team::Player) {
+            return;
+        }
+        let Some(pid) = mech.pilot_id else {
+            return;
+        };
+        let after_limb = mech.limb_ratio(limb);
+        let now_near = mech.is_near_death();
+        let heavy = before_limb > HEAVY_LIMB_RATIO && after_limb <= HEAVY_LIMB_RATIO;
+        let near = !before_near && now_near;
+        if !heavy && !near {
+            return;
+        }
+        let mech_name = mech.name.clone();
+        let reason = if near && heavy {
+            format!("{limb} wrecked, near-death")
+        } else if near {
+            "near-death".to_string()
+        } else {
+            format!("{limb} wrecked")
+        };
+        let Some(pilot) = self.pilot_mut(pid) else {
+            return;
+        };
+        let pname = pilot.name.clone();
+        pilot.spike_from_hit();
+        let stress_pct = (pilot.stress * 100.0).round();
+        self.log.push(format!(
+            "{pname} reels in {mech_name} — {reason}; stress {stress_pct:.0}% (may refuse next order)"
+        ));
     }
 
     fn refresh_team(&mut self, team: Team) {
@@ -327,7 +440,10 @@ impl Mission {
         let dx = (to.x - from.x).signum();
         let dy = (to.y - from.y).signum();
         let candidates = if dx != 0 && dy != 0 {
-            [IVec2::new(from.x + dx, from.y), IVec2::new(from.x, from.y + dy)]
+            [
+                IVec2::new(from.x + dx, from.y),
+                IVec2::new(from.x, from.y + dy),
+            ]
         } else if dx != 0 {
             [IVec2::new(from.x + dx, from.y), IVec2::new(from.x, from.y)]
         } else {
@@ -457,7 +573,9 @@ impl Mission {
 
         let enemy_ids: Vec<u32> = self.living_mechs(Team::Enemy).map(|m| m.id).collect();
         for eid in enemy_ids {
-            let Some(enemy) = self.mech(eid) else { continue };
+            let Some(enemy) = self.mech(eid) else {
+                continue;
+            };
             let epos = enemy.position;
             let mp = enemy.move_left;
             let range = enemy.attack_range();
@@ -536,26 +654,27 @@ impl Mission {
                 }) else {
                     continue;
                 };
-                if self.apply_action(Action::Attack {
-                    attacker_id: pid,
-                    target_id: eid,
-                    limb: LimbKind::Torso,
-                })
-                .is_ok()
-                {
+                if matches!(
+                    self.apply_action(Action::Attack {
+                        attacker_id: pid,
+                        target_id: eid,
+                        limb: LimbKind::Torso,
+                    }),
+                    Ok(ApplyResult::Done)
+                ) {
                     player_hits += 1;
                 }
             }
             self.end_player_turn();
         }
-        self.log
-            .push(format!("SMOKE: player hits={player_hits}"));
+        self.log.push(format!("SMOKE: player hits={player_hits}"));
         if self.is_won() {
             self.log.push("SMOKE: Mission won.".into());
         } else if self.is_lost() {
             self.log.push("SMOKE: Mission lost.".into());
         } else {
-            self.log.push(format!("SMOKE: Stopped after {} turns.", self.turn));
+            self.log
+                .push(format!("SMOKE: Stopped after {} turns.", self.turn));
         }
     }
 }
@@ -620,8 +739,9 @@ mod tests {
         let mut m = Mission::new_skirmish();
         m.smoke_run(6);
         assert!(
-            m.log.iter().any(|l| l.contains("SMOKE: player hits=")
-                && !l.ends_with("hits=0")),
+            m.log
+                .iter()
+                .any(|l| l.contains("SMOKE: player hits=") && !l.ends_with("hits=0")),
             "smoke log: {:?}",
             m.log
         );
@@ -685,13 +805,9 @@ mod tests {
             m.log
         );
         assert!(
-            m.enemy_queue.iter().any(|a| matches!(
-                a,
-                Action::Move {
-                    unit_id: 11,
-                    ..
-                }
-            )),
+            m.enemy_queue
+                .iter()
+                .any(|a| matches!(a, Action::Move { unit_id: 11, .. })),
             "queue: {:?}",
             m.enemy_queue
         );
@@ -788,11 +904,151 @@ mod tests {
     }
 
     #[test]
-    fn autoplay_style_still_wins_with_at_field() {
+    fn chip_damage_does_not_spike_stress() {
         let mut m = Mission::new_skirmish();
-        for _ in 0..20 {
+        m.phase = TurnPhase::Enemy;
+        let stress0 = m.pilot(0).unwrap().stress;
+        // Splinter-sized chip on a fresh arm (~29) leaves it above 25%.
+        let before = m.mech(0).unwrap().limb_ratio(LimbKind::LeftArm);
+        m.mech_mut(0).unwrap().apply_damage(LimbKind::LeftArm, 20.0);
+        m.maybe_stress_spike(0, LimbKind::LeftArm, before, false);
+        assert_eq!(m.pilot(0).unwrap().stress, stress0);
+        assert!(!m.pilot(0).unwrap().pending_refuse);
+        assert!(m.log.iter().all(|l| !l.contains("reels")));
+    }
+
+    #[test]
+    fn wrecked_limb_spikes_stress_and_logs() {
+        let mut m = Mission::new_skirmish();
+        let stress0 = m.pilot(0).unwrap().stress;
+        let before = m.mech(0).unwrap().limb_ratio(LimbKind::LeftArm);
+        m.mech_mut(0).unwrap().apply_damage(LimbKind::LeftArm, 50.0);
+        assert!(m.mech(0).unwrap().limb_ratio(LimbKind::LeftArm) <= 0.25);
+        m.maybe_stress_spike(0, LimbKind::LeftArm, before, false);
+        let p = m.pilot(0).unwrap();
+        assert!(p.stress > stress0);
+        assert!(p.pending_refuse);
+        assert!(
+            m.log
+                .iter()
+                .any(|l| l.contains("reels") && l.contains("L.Arm")),
+            "log: {:?}",
+            m.log
+        );
+    }
+
+    #[test]
+    fn near_death_spikes_stress() {
+        let mut m = Mission::new_skirmish();
+        let before = m.mech(0).unwrap().limb_ratio(LimbKind::Torso);
+        m.mech_mut(0).unwrap().apply_damage(LimbKind::Torso, 75.0);
+        assert!(m.mech(0).unwrap().is_near_death());
+        m.maybe_stress_spike(0, LimbKind::Torso, before, false);
+        assert!(m.pilot(0).unwrap().pending_refuse);
+        assert!(
+            m.log.iter().any(|l| l.contains("near-death")),
+            "log: {:?}",
+            m.log
+        );
+    }
+
+    #[test]
+    fn pending_refuse_skips_next_order_once() {
+        let mut m = Mission::new_skirmish();
+        // Turn 1 / unit 0 roll is 0.17; maxed panic clamps to 0.55 → refuse.
+        {
+            let p = m.pilot_mut(0).unwrap();
+            p.stress = 1.0;
+            p.loyalty = 0.0;
+            p.sync = 0.2;
+            p.pending_refuse = true;
+        }
+        let torso = m
+            .mech(10)
+            .unwrap()
+            .limbs
+            .iter()
+            .find(|l| l.kind == LimbKind::Torso)
+            .unwrap()
+            .hp;
+        let result = m
+            .apply_action(Action::Attack {
+                attacker_id: 0,
+                target_id: 10,
+                limb: LimbKind::Torso,
+            })
+            .unwrap();
+        assert_eq!(result, ApplyResult::Skipped);
+        assert!(m.mech(0).unwrap().acted);
+        assert!(!m.pilot(0).unwrap().pending_refuse);
+        assert_eq!(
+            m.mech(10)
+                .unwrap()
+                .limbs
+                .iter()
+                .find(|l| l.kind == LimbKind::Torso)
+                .unwrap()
+                .hp,
+            torso,
+            "refused attack must not deal damage"
+        );
+        assert!(
+            m.log.iter().any(|l| l.contains("refuses the attack")),
+            "log: {:?}",
+            m.log
+        );
+
+        // Flag consumed — next player turn the same unit fires.
+        m.mech_mut(0).unwrap().refresh_turn();
+        let result = m
+            .apply_action(Action::Attack {
+                attacker_id: 0,
+                target_id: 10,
+                limb: LimbKind::Torso,
+            })
+            .unwrap();
+        assert_eq!(result, ApplyResult::Done);
+        assert!(
+            m.mech(10)
+                .unwrap()
+                .limbs
+                .iter()
+                .find(|l| l.kind == LimbKind::Torso)
+                .unwrap()
+                .hp
+                < torso
+        );
+    }
+
+    #[test]
+    fn pending_refuse_can_obey_and_still_consume() {
+        let mut m = Mission::new_skirmish();
+        // Turn 5 / unit 0 roll is 0.85, above any refuse chance → obey.
+        m.turn = 5;
+        {
+            let p = m.pilot_mut(0).unwrap();
+            p.spike_from_hit();
+        }
+        let result = m
+            .apply_action(Action::Attack {
+                attacker_id: 0,
+                target_id: 10,
+                limb: LimbKind::Torso,
+            })
+            .unwrap();
+        assert_eq!(result, ApplyResult::Done);
+        assert!(!m.pilot(0).unwrap().pending_refuse);
+        assert!(
+            m.log.iter().any(|l| l.contains("steadies and follows")),
+            "log: {:?}",
+            m.log
+        );
+    }
+
+    fn autoplay_loop(m: &mut Mission, max_turns: u32) {
+        for _ in 0..max_turns {
             if m.is_won() || m.is_lost() {
-                break;
+                return;
             }
             let player_ids: Vec<u32> = m.living_mechs(Team::Player).map(|x| x.id).collect();
             for pid in player_ids {
@@ -823,10 +1079,27 @@ mod tests {
                 }
             }
             if m.is_won() || m.is_lost() {
-                break;
+                return;
             }
             m.end_player_turn();
         }
+    }
+
+    #[test]
+    fn autoplay_style_still_wins_with_at_field() {
+        let mut m = Mission::new_skirmish();
+        autoplay_loop(&mut m, 20);
         assert!(m.is_won(), "expected victory with AT Field; log={:?}", m.log);
+    }
+
+    #[test]
+    fn autoplay_style_still_wins_with_stress_skips() {
+        let mut m = Mission::new_skirmish();
+        autoplay_loop(&mut m, 20);
+        assert!(
+            m.is_won(),
+            "expected victory even if a pilot skips; log={:?}",
+            m.log
+        );
     }
 }
