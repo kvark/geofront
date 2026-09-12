@@ -140,6 +140,9 @@ struct PendingHit {
     delay: f32,
     duration: f32,
     dir: Vec3,
+    /// Strike lands on AT Field (cyan deflect; no Hit clip).
+    at_field: bool,
+    shattered: bool,
 }
 
 struct ImpactFlash {
@@ -147,6 +150,8 @@ struct ImpactFlash {
     t: f32,
     duration: f32,
     dir: Vec3,
+    /// Cool cyan AT Field deflect (vs warm sodium hit).
+    at_field: bool,
 }
 
 pub struct Arena {
@@ -157,6 +162,8 @@ pub struct Arena {
     impact_flashes: Vec<ImpactFlash>,
     /// Remaining camera-punch seconds (sharp kick at impact).
     punch_t: f32,
+    /// Brief AT Field ring flare (unit_id → seconds remaining).
+    at_field_pulse: HashMap<u32, f32>,
     /// Persistent local-light handles (Blade tip uses handle-based LocalLight).
     light_handles: Vec<blade_engine::LightHandle>,
 }
@@ -192,6 +199,7 @@ impl Arena {
             pending_hits: Vec::new(),
             impact_flashes: Vec::new(),
             punch_t: 0.0,
+            at_field_pulse: HashMap::new(),
             light_handles: Vec::new(),
         }
     }
@@ -204,6 +212,7 @@ impl Arena {
         self.pending_hits.clear();
         self.impact_flashes.clear();
         self.punch_t = 0.0;
+        self.at_field_pulse.clear();
         for h in self.stage_handles.drain(..) {
             engine.remove_object(h);
         }
@@ -221,6 +230,21 @@ impl Arena {
         toward: Vec3,
         profile: AttackAnim,
         hit_target: Option<u32>,
+    ) -> f32 {
+        self.play_attack_ex(engine, id, toward, profile, hit_target, false, false)
+    }
+
+    /// Like [`play_attack`], but when `at_field` the deferred contact is a cyan
+    /// deflect (and optional shatter) instead of a Hit reaction + sodium punch.
+    pub fn play_attack_ex(
+        &mut self,
+        engine: &mut blade_engine::Engine,
+        id: u32,
+        toward: Vec3,
+        profile: AttackAnim,
+        hit_target: Option<u32>,
+        at_field: bool,
+        shattered: bool,
     ) -> f32 {
         let mut strike_dir = Vec3::Z;
         if let Some(v) = self.visuals.get_mut(&id) {
@@ -250,6 +274,8 @@ impl Arena {
                 delay: profile.telegraph,
                 duration: profile.hit_duration,
                 dir: strike_dir,
+                at_field,
+                shattered,
             });
         }
         profile.total()
@@ -287,9 +313,33 @@ impl Arena {
             t: IMPACT_FLASH_SECS,
             duration: IMPACT_FLASH_SECS,
             dir,
+            at_field: false,
         });
         self.punch_t = self.punch_t.max(IMPACT_PUNCH_SECS);
     }
+
+    /// Cyan AT Field deflect flash + ring pulse (no camera punch).
+    pub fn spawn_at_field_fx(&mut self, target_id: u32, shattered: bool) {
+        let pos = self
+            .visuals
+            .get(&target_id)
+            .map(|v| v.pos + Vec3::Y * 1.45)
+            .unwrap_or(Vec3::Y * 1.45);
+        let dur = if shattered { 0.55 } else { 0.38 };
+        self.impact_flashes.push(ImpactFlash {
+            pos,
+            t: dur,
+            duration: dur,
+            dir: Vec3::Y,
+            at_field: true,
+        });
+        let pulse = if shattered { 0.7 } else { 0.45 };
+        self.at_field_pulse
+            .entry(target_id)
+            .and_modify(|t| *t = (*t).max(pulse))
+            .or_insert(pulse);
+    }
+
 
     pub fn camera_punch(&self) -> f32 {
         self.punch_t
@@ -359,12 +409,33 @@ impl Arena {
                 let k = impact_envelope(flash.t, flash.duration);
                 let p = flash.pos + flash.dir * 0.2;
                 // Low, wide — lavapipe reads ground pools better than high points.
+                let (color, intensity, range) = if flash.at_field {
+                    ([0.35, 0.85, 1.35], 950.0 * k, 10.0)
+                } else {
+                    ([1.0, 0.78, 0.32], 1100.0 * k, 9.5)
+                };
+                push(&mut lights, [p.x, 0.55, p.z], color, intensity, range);
+            }
+            // Idle AT Field aura on Mass while charges remain.
+            for mech in &mission.mechs {
+                if mech.destroyed || mech.at_field == 0 {
+                    continue;
+                }
+                let Some(vis) = self.visuals.get(&mech.id) else {
+                    continue;
+                };
+                let pulse = self
+                    .at_field_pulse
+                    .get(&mech.id)
+                    .copied()
+                    .unwrap_or(0.0);
+                let boost = 1.0 + 2.4 * (pulse / 0.7).clamp(0.0, 1.0);
                 push(
                     &mut lights,
-                    [p.x, 0.55, p.z],
-                    [1.0, 0.78, 0.32],
-                    1100.0 * k,
-                    9.5,
+                    [vis.pos.x, 1.55, vis.pos.z],
+                    [0.25, 0.75, 1.2],
+                    55.0 * boost,
+                    5.5,
                 );
             }
             for vis in self.visuals.values() {
@@ -435,15 +506,19 @@ impl Arena {
         self.pending_hits.retain_mut(|ph| {
             ph.delay -= dt;
             if ph.delay <= 0.0 {
-                due.push((ph.target_id, ph.duration, ph.dir));
+                due.push((ph.target_id, ph.duration, ph.dir, ph.at_field, ph.shattered));
                 false
             } else {
                 true
             }
         });
-        for (tid, dur, dir) in due {
-            self.play_hit(engine, tid, dur, dir);
-            self.spawn_impact(tid, dir);
+        for (tid, dur, dir, at_field, shattered) in due {
+            if at_field {
+                self.spawn_at_field_fx(tid, shattered);
+            } else {
+                self.play_hit(engine, tid, dur, dir);
+                self.spawn_impact(tid, dir);
+            }
         }
 
         self.punch_t = (self.punch_t - dt).max(0.0);
@@ -451,6 +526,10 @@ impl Arena {
             flash.t = (flash.t - dt).max(0.0);
         }
         self.impact_flashes.retain(|f| f.t > 0.0);
+        for t in self.at_field_pulse.values_mut() {
+            *t = (*t - dt).max(0.0);
+        }
+        self.at_field_pulse.retain(|_, t| *t > 0.0);
 
         for mech in &mission.mechs {
             let Some(vis) = self.visuals.get_mut(&mech.id) else {
@@ -553,6 +632,17 @@ impl Arena {
                 1.0
             };
             let mut tint = mech_tint(mech, pulse);
+            if mech.at_field > 0 && !mech.destroyed {
+                // Cool cyan veil while AT Field is up.
+                let flare = self
+                    .at_field_pulse
+                    .get(&mech.id)
+                    .map(|t| (*t / 0.7).clamp(0.0, 1.0))
+                    .unwrap_or(0.0);
+                tint[0] = (tint[0] * 0.72 + 0.15 + 0.55 * flare).min(2.4);
+                tint[1] = (tint[1] * 0.85 + 0.45 + 0.85 * flare).min(3.0);
+                tint[2] = (tint[2] + 0.95 + 1.4 * flare).min(4.2);
+            }
             if vis.telegraph > 0.0 {
                 let build = 1.0 - (vis.telegraph / vis.telegraph_duration.max(0.01));
                 tint[0] = (tint[0] + 0.55 * build).min(2.2);
@@ -612,6 +702,7 @@ impl Arena {
         }
 
         draw_tactical_overlay(engine, mission, selected);
+        draw_at_field_rings(engine, mission, &self.visuals, &self.at_field_pulse);
         draw_impact_sparks(engine, &self.impact_flashes);
     }
 }
@@ -698,8 +789,12 @@ fn draw_impact_sparks(engine: &mut blade_engine::Engine, flashes: &[ImpactFlash]
         if k < 0.04 {
             continue;
         }
-        let color = 0xFF_FF_EE_88;
-        let rays = 10;
+        let (ray_color, tip_a, tip_b) = if flash.at_field {
+            (0xFF_66_EE_FF, 0xFF_AA_FF_FF, 0xFF_33_99_FF)
+        } else {
+            (0xFF_FF_EE_88, 0xFF_FF_FF_CC, 0xFF_FF_AA_44)
+        };
+        let rays = if flash.at_field { 14 } else { 10 };
         for i in 0..rays {
             let a = (i as f32) * std::f32::consts::TAU / rays as f32 + flash.t * 11.0;
             let lift = if i % 2 == 0 { 0.55 } else { 0.12 };
@@ -708,11 +803,11 @@ fn draw_impact_sparks(engine: &mut blade_engine::Engine, flashes: &[ImpactFlash]
             lines.push(blade_render::DebugLine {
                 a: blade_render::DebugPoint {
                     pos: flash.pos.into(),
-                    color,
+                    color: ray_color,
                 },
                 b: blade_render::DebugPoint {
                     pos: (flash.pos + dir * len).into(),
-                    color,
+                    color: ray_color,
                 },
             });
         }
@@ -726,16 +821,87 @@ fn draw_impact_sparks(engine: &mut blade_engine::Engine, flashes: &[ImpactFlash]
             lines.push(blade_render::DebugLine {
                 a: blade_render::DebugPoint {
                     pos: (flash.pos + d0).into(),
-                    color: 0xFF_FF_FF_CC,
+                    color: tip_a,
                 },
                 b: blade_render::DebugPoint {
                     pos: (flash.pos + d1).into(),
-                    color: 0xFF_FF_AA_44,
+                    color: tip_b,
                 },
             });
         }
     }
     engine.add_debug_lines(&lines);
+}
+
+/// Octagon / hex-ish AT Field silhouette around charged Mass units.
+fn draw_at_field_rings(
+    engine: &mut blade_engine::Engine,
+    mission: &Mission,
+    visuals: &HashMap<u32, MechVisual>,
+    pulses: &HashMap<u32, f32>,
+) {
+    let mut lines = Vec::new();
+    for mech in &mission.mechs {
+        if mech.destroyed || mech.at_field == 0 {
+            continue;
+        }
+        let Some(vis) = visuals.get(&mech.id) else {
+            continue;
+        };
+        let flare = pulses
+            .get(&mech.id)
+            .map(|t| (*t / 0.7).clamp(0.0, 1.0))
+            .unwrap_or(0.0);
+        let radius = 1.15 + 0.35 * flare + 0.08 * (mech.at_field as f32);
+        let y0 = 0.35;
+        let y1 = 2.15 + 0.4 * flare;
+        let color = if flare > 0.15 {
+            0xFF_AA_FF_FF
+        } else {
+            0xFF_44_CC_EE
+        };
+        let sides = 8;
+        for ring_y in [y0, (y0 + y1) * 0.5, y1] {
+            for i in 0..sides {
+                let a0 = (i as f32) * std::f32::consts::TAU / sides as f32;
+                let a1 = ((i + 1) as f32) * std::f32::consts::TAU / sides as f32;
+                let p0 = vis.pos + Vec3::new(a0.cos() * radius, ring_y, a0.sin() * radius);
+                let p1 = vis.pos + Vec3::new(a1.cos() * radius, ring_y, a1.sin() * radius);
+                lines.push(blade_render::DebugLine {
+                    a: blade_render::DebugPoint {
+                        pos: p0.into(),
+                        color,
+                    },
+                    b: blade_render::DebugPoint {
+                        pos: p1.into(),
+                        color,
+                    },
+                });
+            }
+        }
+        // Vertical struts so the cage reads under lavapipe.
+        for i in 0..sides {
+            if i % 2 != 0 {
+                continue;
+            }
+            let a = (i as f32) * std::f32::consts::TAU / sides as f32;
+            let p0 = vis.pos + Vec3::new(a.cos() * radius, y0, a.sin() * radius);
+            let p1 = vis.pos + Vec3::new(a.cos() * radius, y1, a.sin() * radius);
+            lines.push(blade_render::DebugLine {
+                a: blade_render::DebugPoint {
+                    pos: p0.into(),
+                    color: 0xFF_33_AA_DD,
+                },
+                b: blade_render::DebugPoint {
+                    pos: p1.into(),
+                    color,
+                },
+            });
+        }
+    }
+    if !lines.is_empty() {
+        engine.add_debug_lines(&lines);
+    }
 }
 
 fn quat_identity() -> mint::Quaternion<f32> {

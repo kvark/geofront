@@ -167,6 +167,17 @@ fn battle_panel(
             let (hp, max) = m.total_hp();
             let label = if m.destroyed {
                 format!("{} (destroyed)", m.name)
+            } else if m.at_field > 0 {
+                format!(
+                    "{} {}  ({},{})  {:.0}/{:.0}  AT×{}",
+                    m.name,
+                    m.facing.label(),
+                    m.position.x,
+                    m.position.y,
+                    hp,
+                    max,
+                    m.at_field
+                )
             } else {
                 format!(
                     "{} {}  ({},{})  {:.0}/{:.0}",
@@ -180,6 +191,16 @@ fn battle_panel(
             };
             if cols[1].selectable_label(selected, label).clicked() && !m.destroyed {
                 *selected_enemy = m.id;
+            }
+            if selected && !m.destroyed && m.at_field > 0 {
+                cols[1].colored_label(
+                    egui::Color32::from_rgb(100, 210, 255),
+                    format!(
+                        "AT Field active ({} absorb{})",
+                        m.at_field,
+                        if m.at_field == 1 { "" } else { "s" }
+                    ),
+                );
             }
         }
     });
