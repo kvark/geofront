@@ -2,7 +2,7 @@
 
 use crate::combat::{Mission, TurnPhase};
 use crate::render::ViewMode;
-use crate::units::{Facing, LimbKind, Team};
+use crate::units::{Facing, LimbKind, SyncBand, Team};
 
 /// Draws the side-panel HUD and returns any action the player requested.
 pub fn side_hud(
@@ -105,11 +105,15 @@ fn battle_panel(
         for m in mission.mechs.iter().filter(|m| m.team == Team::Player) {
             let selected = *selected_player == m.id;
             let (hp, max) = m.total_hp();
-            let stressed = m
-                .pilot_id
-                .and_then(|id| mission.pilot(id))
-                .map(|p| p.pending_refuse)
-                .unwrap_or(false);
+            let pilot = m.pilot_id.and_then(|id| mission.pilot(id));
+            let stressed = pilot.map(|p| p.pending_refuse).unwrap_or(false);
+            let sync_mark = pilot
+                .map(|p| match p.sync_band() {
+                    SyncBand::High => " ⚡",
+                    SyncBand::Low => " ↓",
+                    SyncBand::Mid => "",
+                })
+                .unwrap_or("");
             let label = if m.destroyed {
                 format!("{} (destroyed)", m.name)
             } else if stressed {
@@ -125,14 +129,15 @@ fn battle_panel(
                 )
             } else {
                 format!(
-                    "{} {}  ({},{})  {:.0}/{:.0}  MP{}",
+                    "{} {}  ({},{})  {:.0}/{:.0}  MP{}{}",
                     m.name,
                     m.facing.label(),
                     m.position.x,
                     m.position.y,
                     hp,
                     max,
-                    m.move_left
+                    m.move_left,
+                    sync_mark
                 )
             };
             if cols[0].selectable_label(selected, label).clicked() && !m.destroyed {
@@ -143,7 +148,15 @@ fn battle_panel(
                     if let Some(p) = mission.pilot(pid) {
                         cols[0].horizontal(|ui| {
                             ui.label(format!("Pilot {}", p.name));
-                            ui.label(format!("sync {:.0}%", p.sync * 100.0));
+                            let sync_color = match p.sync_band() {
+                                SyncBand::High => egui::Color32::from_rgb(100, 220, 255),
+                                SyncBand::Low => egui::Color32::from_rgb(255, 140, 70),
+                                SyncBand::Mid => egui::Color32::LIGHT_GREEN,
+                            };
+                            ui.colored_label(
+                                sync_color,
+                                format!("sync {:.0}%", p.sync * 100.0),
+                            );
                             ui.label(format!("loyalty {:.0}%", p.loyalty * 100.0));
                             let stress_color = if p.stress >= 0.6 {
                                 egui::Color32::from_rgb(255, 90, 90)
@@ -162,6 +175,27 @@ fn battle_panel(
                                 egui::Color32::from_rgb(255, 170, 70),
                                 "⚠ stressed — may refuse next order",
                             );
+                        }
+                        match p.sync_band() {
+                            SyncBand::High => {
+                                cols[0].colored_label(
+                                    egui::Color32::from_rgb(100, 220, 255),
+                                    format!(
+                                        "⚡ high sync — strikes ×{:.2}, crit window",
+                                        p.sync_damage_mult()
+                                    ),
+                                );
+                            }
+                            SyncBand::Low => {
+                                cols[0].colored_label(
+                                    egui::Color32::from_rgb(255, 140, 70),
+                                    format!(
+                                        "sync frayed — strikes ×{:.2}",
+                                        p.sync_damage_mult()
+                                    ),
+                                );
+                            }
+                            SyncBand::Mid => {}
                         }
                     }
                 }
