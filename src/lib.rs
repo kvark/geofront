@@ -10,7 +10,7 @@ mod world;
 
 use std::path::PathBuf;
 
-use combat::{Action, CombatFx, Mission};
+use combat::{Action, Mission};
 use log::info;
 use units::LimbKind;
 use winit::{
@@ -281,20 +281,14 @@ impl Game {
 
         let mission = Mission::new_skirmish();
         let view_mode = initial_view_mode();
-        let autoplay = std::env::var_os("GEOFRONT_AUTOPLAY").is_some();
-        // AT Field + presentation delays need ~200s under lavapipe; bump low QUIT_AFTER.
-        let mut quit_after = std::env::var("GEOFRONT_QUIT_AFTER")
+        let quit_after = std::env::var("GEOFRONT_QUIT_AFTER")
             .ok()
-            .and_then(|s| s.parse::<f32>().ok())
+            .and_then(|s| s.parse().ok())
             .or_else(|| {
                 std::env::var("GEOFRONT_SCREENSHOT")
                     .ok()
                     .map(|_| 8.0)
             });
-        if autoplay {
-            let floor = 200.0_f32;
-            quit_after = Some(quit_after.map(|t: f32| t.max(floor)).unwrap_or(floor));
-        }
         let arena = render::Arena::spawn(&mut engine, view_mode, &mission);
         let fly = render::FlyCam::for_mode(view_mode);
 
@@ -317,7 +311,7 @@ impl Game {
             last_redraw: time::Instant::now(),
             started_at: time::Instant::now(),
             quit_after,
-            autoplay,
+            autoplay: std::env::var_os("GEOFRONT_AUTOPLAY").is_some(),
             autoplay_wait: 0.0,
             autoplay_warmup: 2.5,
             autoplay_done: false,
@@ -569,13 +563,12 @@ impl Game {
                                 anim_speed: 1.15,
                                 hit_duration: 0.48,
                             });
-                        let fx = self.mission.take_fx();
-                        let total = self.play_strike(
+                        let total = self.arena.play_attack(
+                            &mut self.engine,
                             attacker_id,
                             to - from,
                             profile,
                             Some(target_id),
-                            &fx,
                         );
                         self.impact_timer = total.max(0.85);
                         self.enemy_step_timer = (total + 0.12).max(0.5);
@@ -665,46 +658,6 @@ impl Game {
         false
     }
 
-
-    /// Start attack presentation; AT Field absorbs become cyan deflects timed to the strike.
-    fn play_strike(
-        &mut self,
-        attacker: u32,
-        toward: glam::Vec3,
-        profile: render::AttackAnim,
-        target: Option<u32>,
-        fx: &[CombatFx],
-    ) -> f32 {
-        let mut at_field = false;
-        let mut shattered = false;
-        if let Some(tid) = target {
-            for event in fx {
-                match event {
-                    CombatFx::AtFieldAbsorb { target_id } if *target_id == tid => {
-                        at_field = true;
-                    }
-                    CombatFx::AtFieldBreak { target_id } if *target_id == tid => {
-                        at_field = true;
-                        shattered = true;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if at_field {
-            self.arena.play_attack_ex(
-                &mut self.engine,
-                attacker,
-                toward,
-                profile,
-                target,
-                true,
-                shattered,
-            )
-        } else {
-            self.arena.play_attack(&mut self.engine, attacker, toward, profile, target)
-        }
-    }
 
     /// Scripted skirmish for lavapipe: warm up, attack, end turn, until VICTORY/DEFEAT.
     fn tick_autoplay(&mut self, dt: f32) {
@@ -819,18 +772,16 @@ impl Game {
                                 anim_speed: 1.15,
                                 hit_duration: 0.48,
                             });
-                        let fx = self.mission.take_fx();
                         if let (Some(f), Some(t)) = (from, to) {
-                            let total = self.play_strike(
+                            let total = self.arena.play_attack(
+                                &mut self.engine,
                                 attacker,
                                 t - f,
                                 profile,
                                 Some(target),
-                                &fx,
                             );
                             self.impact_timer = total.max(1.0);
                         } else {
-                            let _ = fx;
                             self.impact_timer = profile.total().max(1.0);
                         }
                     }
