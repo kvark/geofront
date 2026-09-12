@@ -282,7 +282,10 @@ impl Game {
 
         let mission = Mission::new_skirmish();
         let view_mode = initial_view_mode();
-        let quit_after = std::env::var("GEOFRONT_QUIT_AFTER")
+        let autoplay = std::env::var_os("GEOFRONT_AUTOPLAY").is_some();
+        // Denser Tokyo-3 scenes need ~180–200s under lavapipe; CI may still pass
+        // QUIT_AFTER=120 until workflow OAuth can bump smoke.yml.
+        let mut quit_after = std::env::var("GEOFRONT_QUIT_AFTER")
             .ok()
             .and_then(|s| s.parse().ok())
             .or_else(|| {
@@ -290,6 +293,10 @@ impl Game {
                     .ok()
                     .map(|_| 8.0)
             });
+        if autoplay {
+            let floor = 200.0_f32;
+            quit_after = Some(quit_after.map(|t| t.max(floor)).unwrap_or(floor));
+        }
         let arena = render::Arena::spawn(&mut engine, view_mode, &mission);
         let fly = render::FlyCam::for_mode(view_mode);
 
@@ -312,7 +319,7 @@ impl Game {
             last_redraw: time::Instant::now(),
             started_at: time::Instant::now(),
             quit_after,
-            autoplay: std::env::var_os("GEOFRONT_AUTOPLAY").is_some(),
+            autoplay,
             autoplay_wait: 0.0,
             autoplay_warmup: 2.5,
             autoplay_done: false,
