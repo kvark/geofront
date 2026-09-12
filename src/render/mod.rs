@@ -29,6 +29,82 @@ pub fn impact_envelope(remaining: f32, duration: f32) -> f32 {
     k * k
 }
 
+/// Attack / telegraph color language so Angels read apart from mech sodium.
+#[derive(Debug, Clone, Copy)]
+struct StrikePalette {
+    light: [f32; 3],
+    light_i: f32,
+    light_r: f32,
+    spark_ray: u32,
+    spark_a: u32,
+    spark_b: u32,
+    telegraph: [f32; 3],
+    telegraph_i: f32,
+    telegraph_r: f32,
+    telegraph_height: f32,
+    punch: [f32; 3],
+    punch_i: f32,
+    tint_build: [f32; 3],
+    /// Kick warm sodium street lamps on impact (mechs only).
+    sodium_kick: bool,
+}
+
+fn strike_palette(kind: Option<AlienKind>) -> StrikePalette {
+    match kind {
+        // Fast harasser: electric magenta / violet.
+        Some(AlienKind::Splinter) => StrikePalette {
+            light: [0.95, 0.28, 1.0],
+            light_i: 980.0,
+            light_r: 8.5,
+            spark_ray: 0xFF_FF_66_EE,
+            spark_a: 0xFF_FF_CC_FF,
+            spark_b: 0xFF_AA_22_CC,
+            telegraph: [0.75, 0.22, 1.0],
+            telegraph_i: 140.0,
+            telegraph_r: 4.2,
+            telegraph_height: 2.05,
+            punch: [0.85, 0.25, 1.0],
+            punch_i: 260.0,
+            tint_build: [0.35, 0.15, 0.95],
+            sodium_kick: false,
+        },
+        // Slow pressure: bone-pale + crimson core.
+        Some(AlienKind::Mass) => StrikePalette {
+            light: [1.0, 0.22, 0.18],
+            light_i: 1200.0,
+            light_r: 11.0,
+            spark_ray: 0xFF_44_55_FF,
+            spark_a: 0xFF_AA_CC_FF,
+            spark_b: 0xFF_22_33_CC,
+            telegraph: [1.0, 0.18, 0.12],
+            telegraph_i: 160.0,
+            telegraph_r: 6.5,
+            telegraph_height: 1.55,
+            punch: [1.0, 0.28, 0.14],
+            punch_i: 300.0,
+            tint_build: [0.85, 0.12, 0.08],
+            sodium_kick: false,
+        },
+        // Player / generic mechs: warm sodium strike language.
+        None => StrikePalette {
+            light: [1.0, 0.78, 0.32],
+            light_i: 1100.0,
+            light_r: 9.5,
+            spark_ray: 0xFF_FF_EE_88,
+            spark_a: 0xFF_FF_FF_CC,
+            spark_b: 0xFF_FF_AA_44,
+            telegraph: [0.45, 0.35, 1.0],
+            telegraph_i: 90.0,
+            telegraph_r: 5.0,
+            telegraph_height: 1.4,
+            punch: [1.0, 0.55, 0.18],
+            punch_i: 220.0,
+            tint_build: [0.55, 0.25, 0.35],
+            sodium_kick: true,
+        },
+    }
+}
+
 /// Per-attacker wind-up + strike timing (aliens differ).
 #[derive(Debug, Clone, Copy)]
 pub struct AttackAnim {
@@ -109,6 +185,8 @@ enum MechClip {
 
 struct MechVisual {
     handle: blade_engine::ObjectHandle,
+    /// Cached at spawn so attack lights/tints know Angel vs mech language.
+    alien: Option<AlienKind>,
     pos: Vec3,
     yaw: f32,
     bob: f32,
@@ -143,6 +221,8 @@ struct PendingHit {
     /// Strike lands on AT Field (cyan deflect; no Hit clip).
     at_field: bool,
     shattered: bool,
+    /// Attacker language for the deferred impact flash.
+    attacker_kind: Option<AlienKind>,
 }
 
 struct ImpactFlash {
@@ -150,8 +230,10 @@ struct ImpactFlash {
     t: f32,
     duration: f32,
     dir: Vec3,
-    /// Cool cyan AT Field deflect (vs warm sodium hit).
+    /// Cool cyan AT Field deflect (vs warm sodium / Angel hit).
     at_field: bool,
+    /// `Some` = Angel strike palette; `None` = mech sodium (ignored when at_field).
+    kind: Option<AlienKind>,
 }
 
 pub struct Arena {
@@ -247,10 +329,12 @@ impl Arena {
         shattered: bool,
     ) -> f32 {
         let mut strike_dir = Vec3::Z;
+        let mut attacker_kind = None;
         if let Some(v) = self.visuals.get_mut(&id) {
             if v.death_locked {
                 return 0.0;
             }
+            attacker_kind = v.alien;
             let dir = Vec3::new(toward.x, 0.0, toward.z);
             v.punch_dir = if dir.length_squared() > 1e-4 {
                 dir.normalize()
@@ -276,6 +360,7 @@ impl Arena {
                 dir: strike_dir,
                 at_field,
                 shattered,
+                attacker_kind,
             });
         }
         profile.total()
@@ -302,7 +387,7 @@ impl Arena {
     }
 
     /// Flash + camera punch at the contact point. Fires even if the target is already a wreck.
-    fn spawn_impact(&mut self, target_id: u32, dir: Vec3) {
+    fn spawn_impact(&mut self, target_id: u32, dir: Vec3, kind: Option<AlienKind>) {
         let pos = self
             .visuals
             .get(&target_id)
@@ -314,6 +399,7 @@ impl Arena {
             duration: IMPACT_FLASH_SECS,
             dir,
             at_field: false,
+            kind,
         });
         self.punch_t = self.punch_t.max(IMPACT_PUNCH_SECS);
     }
@@ -332,6 +418,7 @@ impl Arena {
             duration: dur,
             dir: Vec3::Y,
             at_field: true,
+            kind: None,
         });
         let pulse = if shattered { 0.7 } else { 0.45 };
         self.at_field_pulse
@@ -388,9 +475,12 @@ impl Arena {
                 // Color is deep orange (not creamy white) for Tokyo-3 night.
                 // Lavapipe reads pools weakly on flat Kenney asphalt — brighter,
                 // larger falloff, slightly lower so the street gets the lobe.
+                // Only mech (sodium-language) impacts kick the street lamps —
+                // Angel hits keep their own magenta/crimson ground flash.
                 let kick = self
                     .impact_flashes
                     .iter()
+                    .filter(|f| strike_palette(f.kind).sodium_kick)
                     .map(|f| impact_envelope(f.t, f.duration))
                     .fold(0.0f32, f32::max);
                 let sodium = [1.0, 0.55, 0.14];
@@ -409,10 +499,11 @@ impl Arena {
                 let k = impact_envelope(flash.t, flash.duration);
                 let p = flash.pos + flash.dir * 0.2;
                 // Low, wide — lavapipe reads ground pools better than high points.
+                let pal = strike_palette(flash.kind);
                 let (color, intensity, range) = if flash.at_field {
                     ([0.35, 0.85, 1.35], 950.0 * k, 10.0)
                 } else {
-                    ([1.0, 0.78, 0.32], 1100.0 * k, 9.5)
+                    (pal.light, pal.light_i * k, pal.light_r)
                 };
                 push(&mut lights, [p.x, 0.55, p.z], color, intensity, range);
             }
@@ -440,29 +531,32 @@ impl Arena {
             }
             for vis in self.visuals.values() {
                 if vis.punch > 0.0 {
+                    let pal = strike_palette(vis.alien);
                     let flash = vis.pos + Vec3::Y * 1.6 + vis.punch_dir * 0.8;
                     let k = (vis.punch / vis.punch_duration.max(0.01)).clamp(0.0, 1.0);
                     push(
                         &mut lights,
                         flash.into(),
-                        [1.0, 0.55, 0.18],
-                        220.0 * k,
+                        pal.punch,
+                        pal.punch_i * k,
                         6.0,
                     );
                 }
             }
             for vis in self.visuals.values() {
                 if vis.telegraph > 0.0 {
+                    let pal = strike_palette(vis.alien);
                     let k = (vis.telegraph / vis.telegraph_duration.max(0.01)).clamp(0.0, 1.0);
                     // Charge glow builds as wind-up completes (k goes 1→0).
                     let build = 1.0 - k;
-                    let glow = vis.pos + Vec3::Y * 1.4 - vis.punch_dir * 0.35;
+                    let glow =
+                        vis.pos + Vec3::Y * pal.telegraph_height - vis.punch_dir * 0.35;
                     push(
                         &mut lights,
                         glow.into(),
-                        [0.45, 0.35, 1.0],
-                        90.0 * build,
-                        5.0,
+                        pal.telegraph,
+                        pal.telegraph_i * build,
+                        pal.telegraph_r,
                     );
                 }
             }
@@ -506,18 +600,18 @@ impl Arena {
         self.pending_hits.retain_mut(|ph| {
             ph.delay -= dt;
             if ph.delay <= 0.0 {
-                due.push((ph.target_id, ph.duration, ph.dir, ph.at_field, ph.shattered));
+                due.push((ph.target_id, ph.duration, ph.dir, ph.at_field, ph.shattered, ph.attacker_kind));
                 false
             } else {
                 true
             }
         });
-        for (tid, dur, dir, at_field, shattered) in due {
+        for (tid, dur, dir, at_field, shattered, kind) in due {
             if at_field {
                 self.spawn_at_field_fx(tid, shattered);
             } else {
                 self.play_hit(engine, tid, dur, dir);
-                self.spawn_impact(tid, dir);
+                self.spawn_impact(tid, dir, kind);
             }
         }
 
@@ -645,9 +739,10 @@ impl Arena {
             }
             if vis.telegraph > 0.0 {
                 let build = 1.0 - (vis.telegraph / vis.telegraph_duration.max(0.01));
-                tint[0] = (tint[0] + 0.55 * build).min(2.2);
-                tint[1] = (tint[1] + 0.25 * build).min(2.0);
-                tint[2] = (tint[2] + 0.35 * build).min(2.2);
+                let tb = strike_palette(vis.alien).tint_build;
+                tint[0] = (tint[0] + tb[0] * build).min(2.8);
+                tint[1] = (tint[1] + tb[1] * build).min(2.6);
+                tint[2] = (tint[2] + tb[2] * build).min(3.2);
             }
             if vis.hit > 0.0 {
                 // Hot white-orange pop so the beat reads under lavapipe.
@@ -703,6 +798,7 @@ impl Arena {
 
         draw_tactical_overlay(engine, mission, selected);
         draw_at_field_rings(engine, mission, &self.visuals, &self.at_field_pulse);
+        draw_angel_silhouettes(engine, mission, &self.visuals);
         draw_impact_sparks(engine, &self.impact_flashes);
     }
 }
@@ -789,12 +885,21 @@ fn draw_impact_sparks(engine: &mut blade_engine::Engine, flashes: &[ImpactFlash]
         if k < 0.04 {
             continue;
         }
-        let (ray_color, tip_a, tip_b) = if flash.at_field {
-            (0xFF_66_EE_FF, 0xFF_AA_FF_FF, 0xFF_33_99_FF)
+        let pal = strike_palette(flash.kind);
+        let (ray_color, tip_a, tip_b, rays) = if flash.at_field {
+            (0xFF_66_EE_FFu32, 0xFF_AA_FF_FFu32, 0xFF_33_99_FFu32, 14)
         } else {
-            (0xFF_FF_EE_88, 0xFF_FF_FF_CC, 0xFF_FF_AA_44)
+            (
+                pal.spark_ray,
+                pal.spark_a,
+                pal.spark_b,
+                match flash.kind {
+                    Some(AlienKind::Mass) => 12,
+                    Some(AlienKind::Splinter) => 14,
+                    None => 10,
+                },
+            )
         };
-        let rays = if flash.at_field { 14 } else { 10 };
         for i in 0..rays {
             let a = (i as f32) * std::f32::consts::TAU / rays as f32 + flash.t * 11.0;
             let lift = if i % 2 == 0 { 0.55 } else { 0.12 };
@@ -897,6 +1002,142 @@ fn draw_at_field_rings(
                     color,
                 },
             });
+        }
+    }
+    if !lines.is_empty() {
+        engine.add_debug_lines(&lines);
+    }
+}
+
+/// Soft Angel silhouette without new art: Mass = wide crimson cage,
+/// Splinter = tall magenta spines. Telegraph inflates the ring.
+fn draw_angel_silhouettes(
+    engine: &mut blade_engine::Engine,
+    mission: &Mission,
+    visuals: &HashMap<u32, MechVisual>,
+) {
+    let mut lines = Vec::new();
+    for mech in &mission.mechs {
+        if mech.destroyed {
+            continue;
+        }
+        let Some(kind) = mech.alien else {
+            continue;
+        };
+        let Some(vis) = visuals.get(&mech.id) else {
+            continue;
+        };
+        let charge = if vis.telegraph > 0.0 {
+            1.0 - (vis.telegraph / vis.telegraph_duration.max(0.01))
+        } else if vis.punch > 0.0 {
+            (vis.punch / vis.punch_duration.max(0.01)).clamp(0.0, 1.0) * 0.55
+        } else {
+            0.0
+        };
+        match kind {
+            AlienKind::Mass => {
+                let radius = 1.25 + 0.45 * charge;
+                let y0 = 0.22;
+                let y1 = 2.35 + 0.55 * charge;
+                let color = if charge > 0.2 {
+                    0xFF_66_88_FF
+                } else {
+                    0xFF_33_44_CC
+                };
+                let sides = 6;
+                for ring_y in [y0, (y0 + y1) * 0.5, y1] {
+                    for i in 0..sides {
+                        let a0 = (i as f32) * std::f32::consts::TAU / sides as f32;
+                        let a1 = ((i + 1) as f32) * std::f32::consts::TAU / sides as f32;
+                        let p0 = vis.pos + Vec3::new(a0.cos() * radius, ring_y, a0.sin() * radius);
+                        let p1 = vis.pos + Vec3::new(a1.cos() * radius, ring_y, a1.sin() * radius);
+                        lines.push(blade_render::DebugLine {
+                            a: blade_render::DebugPoint {
+                                pos: p0.into(),
+                                color,
+                            },
+                            b: blade_render::DebugPoint {
+                                pos: p1.into(),
+                                color,
+                            },
+                        });
+                    }
+                }
+                for i in 0..sides {
+                    if i % 2 != 0 {
+                        continue;
+                    }
+                    let a = (i as f32) * std::f32::consts::TAU / sides as f32;
+                    let p0 = vis.pos + Vec3::new(a.cos() * radius, y0, a.sin() * radius);
+                    let p1 = vis.pos + Vec3::new(a.cos() * radius, y1, a.sin() * radius);
+                    lines.push(blade_render::DebugLine {
+                        a: blade_render::DebugPoint {
+                            pos: p0.into(),
+                            color: 0xFF_22_22_AA,
+                        },
+                        b: blade_render::DebugPoint {
+                            pos: p1.into(),
+                            color,
+                        },
+                    });
+                }
+            }
+            AlienKind::Splinter => {
+                let radius = 0.55 + 0.25 * charge;
+                let y0 = 0.15;
+                let y1 = 2.85 + 0.7 * charge;
+                let color = if charge > 0.2 {
+                    0xFF_FF_88_FF
+                } else {
+                    0xFF_CC_44_DD
+                };
+                let mid = (y0 + y1) * 0.45;
+                for i in 0..4 {
+                    let a0 = (i as f32) * std::f32::consts::TAU / 4.0 + 0.2 * charge;
+                    let a1 = ((i + 1) as f32) * std::f32::consts::TAU / 4.0 + 0.2 * charge;
+                    let p0 = vis.pos + Vec3::new(a0.cos() * radius, mid, a0.sin() * radius);
+                    let p1 = vis.pos + Vec3::new(a1.cos() * radius, mid, a1.sin() * radius);
+                    lines.push(blade_render::DebugLine {
+                        a: blade_render::DebugPoint {
+                            pos: p0.into(),
+                            color,
+                        },
+                        b: blade_render::DebugPoint {
+                            pos: p1.into(),
+                            color,
+                        },
+                    });
+                }
+                for i in 0..4 {
+                    let a = (i as f32) * std::f32::consts::TAU / 4.0;
+                    let base = vis.pos
+                        + Vec3::new(a.cos() * radius * 0.55, y0, a.sin() * radius * 0.55);
+                    let tip = vis.pos
+                        + Vec3::new(a.cos() * radius * 0.2, y1, a.sin() * radius * 0.2);
+                    lines.push(blade_render::DebugLine {
+                        a: blade_render::DebugPoint {
+                            pos: base.into(),
+                            color: 0xFF_88_22_AA,
+                        },
+                        b: blade_render::DebugPoint {
+                            pos: tip.into(),
+                            color,
+                        },
+                    });
+                }
+                let apex = vis.pos + Vec3::Y * y1;
+                let core = vis.pos + Vec3::Y * mid;
+                lines.push(blade_render::DebugLine {
+                    a: blade_render::DebugPoint {
+                        pos: core.into(),
+                        color: 0xFF_FF_CC_FF,
+                    },
+                    b: blade_render::DebugPoint {
+                        pos: apex.into(),
+                        color,
+                    },
+                });
+            }
         }
     }
     if !lines.is_empty() {
@@ -1133,9 +1374,10 @@ fn mech_glb_path(mech: &Mech) -> &'static str {
 
 fn mech_scale(mech: &Mech) -> f32 {
     // Quaternius pack is authored at ~7m; 0.4 puts player feet on a 2-unit cell.
+    // Angels exaggerate presence without new meshes: Mass bulk, Splinter spindly.
     match mech.alien {
-        Some(AlienKind::Mass) => 0.55,
-        Some(AlienKind::Splinter) => 0.32,
+        Some(AlienKind::Mass) => 0.68,
+        Some(AlienKind::Splinter) => 0.28,
         None => 0.4,
     }
 }
@@ -1143,9 +1385,11 @@ fn mech_scale(mech: &Mech) -> f32 {
 fn mech_tint(mech: &Mech, pulse: f32) -> [f32; 4] {
     // High gain + saturated team colors so mechs stay readable against the
     // darker Tokyo-3 twilight (Quaternius albedo ~0.2–0.35 + Reinhard).
+    // Angels lean bone/crimson (Mass) and magenta-violet (Splinter) so they
+    // do not read as recolored enemy mechs.
     match mech.alien {
-        Some(AlienKind::Mass) => [2.45 * pulse, 1.05, 0.75, 1.0],
-        Some(AlienKind::Splinter) => [1.35 * pulse, 1.45 * pulse, 2.55 * pulse, 1.0],
+        Some(AlienKind::Mass) => [2.55 * pulse, 1.65 * pulse, 1.35 * pulse, 1.0],
+        Some(AlienKind::Splinter) => [1.65 * pulse, 0.85 * pulse, 2.75 * pulse, 1.0],
         None => match mech.team {
             Team::Player => [1.55 * pulse, 1.95 * pulse, 2.35 * pulse, 1.0],
             Team::Enemy => [2.35 * pulse, 1.15, 0.95, 1.0],
@@ -1238,6 +1482,7 @@ fn spawn_mech(engine: &mut blade_engine::Engine, mech: &Mech) -> MechVisual {
     let walk_index = if path.contains("George") { 16 } else { 15 };
     let vis = MechVisual {
         handle,
+        alien: mech.alien,
         pos,
         yaw,
         bob: 0.0,
@@ -1502,5 +1747,28 @@ mod tests {
         assert!(impact_envelope(0.0, 0.22) < 0.01);
         let mid = impact_envelope(0.11, 0.22);
         assert!(mid > 0.20 && mid < 0.30, "mid={mid}");
+    }
+
+    #[test]
+    fn angel_strike_palette_differs_from_mech() {
+        let mech = strike_palette(None);
+        let splinter = strike_palette(Some(AlienKind::Splinter));
+        let mass = strike_palette(Some(AlienKind::Mass));
+        assert!(mech.sodium_kick);
+        assert!(!splinter.sodium_kick);
+        assert!(!mass.sodium_kick);
+        assert!(splinter.light[2] > splinter.light[1]);
+        assert!(mass.light[0] > mass.light[2]);
+        assert!(mech.light[1] > 0.5);
+        assert!(splinter.telegraph_height > mass.telegraph_height);
+    }
+
+    #[test]
+    fn angel_scale_presence() {
+        let splinter = Mech::new_alien(1, AlienKind::Splinter, IVec2::ZERO);
+        let mass = Mech::new_alien(2, AlienKind::Mass, IVec2::ZERO);
+        let player = Mech::new_player(3, "Coil", IVec2::ZERO);
+        assert!(mech_scale(&mass) > mech_scale(&player));
+        assert!(mech_scale(&splinter) < mech_scale(&player));
     }
 }
