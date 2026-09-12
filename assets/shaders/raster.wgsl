@@ -289,7 +289,29 @@ fn raster_fs(input: VertexOutput) -> @location(0) vec4<f32> {
     let ambient = evaluate_ambient(mat) * frame_params.ambient_color.xyz;
     let emissive = draw_params.emissive_factor.rgb * textureSample(emissive_tex, samp, input.uv).rgb;
     let local = shade_local_light(mat, n, v, input.world_pos);
-    let color = ambient + light + local + emissive;
+
+    // Cool anime rim / fresnel edge so mechs read against warm dusk sodium.
+    let ndotv = max(dot(n, v), 0.0);
+    let rim = pow(1.0 - ndotv, 2.6);
+    let rim_col = vec3<f32>(0.55, 0.85, 1.45) * rim * 1.35;
+
+    // Procedural lit-window glitter on vertical faces (Tokyo-3 night).
+    // Mostly warm sodium windows; sparse cool accents for neon contrast.
+    let wall = smoothstep(0.5, 0.92, 1.0 - abs(n.y));
+    let cell = floor(input.world_pos * vec3<f32>(1.55, 2.2, 1.55));
+    let h = hash31(cell);
+    let h2 = hash31(cell + vec3<f32>(17.0, 9.0, 3.0));
+    let lit = step(0.68, h) * wall;
+    var window_col = mix(vec3<f32>(3.2, 1.45, 0.35), vec3<f32>(0.5, 1.45, 1.7), step(0.85, h2));
+    window_col *= lit * (1.0 + 1.4 * h2);
+
+    var color = ambient + light + local + emissive + rim_col + window_col;
+
+    // Light depth haze toward warm dusk (not purple — purple washed asphalt lilac).
+    let dist = length(frame_params.camera_pos.xyz - input.world_pos);
+    let fog_t = 1.0 - exp(-max(dist - 10.0, 0.0) * 0.028);
+    let fog_col = vec3<f32>(1.1, 0.45, 0.22);
+    color = mix(color, fog_col, clamp(fog_t, 0.0, 0.38));
 
     let mapped = color / (color + vec3<f32>(1.0));
     return vec4<f32>(encode_surface_color(mapped, frame_params.settings.y > 0.5), 1.0);
@@ -382,15 +404,18 @@ fn raster_sky_fs(input: SkyOutput) -> @location(0) vec4<f32> {
                 color = color + tint2 * b2;
             }
         } else {
-            // Tokyo-3 twilight (pre-Reinhard): warm sodium horizon, purple
-            // haze, deep cool zenith. Geofront-local mood; re-apply after
-            // scripts/fetch-shaders.sh if Blade tip resets the gradient.
+            // Tokyo-3 twilight (pre-Reinhard): hot sodium horizon band, purple
+            // haze shelf, deep indigo zenith. Geofront-local mood; re-apply
+            // after scripts/fetch-shaders.sh if Blade tip resets the gradient.
             let t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
-            let horizon = vec3<f32>(1.8, 0.48, 0.12);
-            let haze = vec3<f32>(0.42, 0.22, 0.7);
-            let zenith = vec3<f32>(0.015, 0.03, 0.12);
-            let low = mix(horizon, haze, smoothstep(0.0, 0.4, t));
-            color = mix(low, zenith, smoothstep(0.15, 1.0, t));
+            let sun_band = exp(-pow((dir.y + 0.04) / 0.14, 2.0));
+            let horizon = vec3<f32>(2.8, 0.62, 0.12);
+            let haze = vec3<f32>(0.62, 0.22, 0.78);
+            let zenith = vec3<f32>(0.01, 0.025, 0.1);
+            let low = mix(horizon, haze, smoothstep(0.0, 0.35, t));
+            color = mix(low, zenith, smoothstep(0.1, 1.0, t));
+            // Hotter limb along the dusk line (Eva city-battle glow).
+            color = color + vec3<f32>(3.4, 0.85, 0.18) * sun_band * 0.7;
         }
     }
     let mapped = color / (color + vec3<f32>(1.0));
