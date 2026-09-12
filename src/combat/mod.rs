@@ -351,7 +351,7 @@ impl Mission {
                 let before_limb = target.limb_ratio(limb);
                 let before_near = target.is_near_death();
 
-                // AT Field: absorb before limbs. Mass starts with charges.
+                // AT Field: absorb before limbs (player: 1 charge; Mass: 2).
                 let absorbed = target.try_absorb_at_field();
                 let remaining_field = target.at_field;
                 let tname = target.name.clone();
@@ -1044,7 +1044,83 @@ mod tests {
         let m = Mission::new_skirmish();
         assert_eq!(m.mech(11).unwrap().at_field, 2);
         assert_eq!(m.mech(10).unwrap().at_field, 0);
+        assert_eq!(m.mech(0).unwrap().at_field, 1);
+        assert_eq!(m.mech(1).unwrap().at_field, 1);
+    }
+
+    #[test]
+    fn player_at_field_absorbs_then_shatters() {
+        let mut m = Mission::new_skirmish();
+        m.phase = TurnPhase::Enemy;
+        // Pull Splinter into Coil range and strike.
+        m.mech_mut(10).unwrap().position = IVec2::new(3, 3);
+        let torso_before = m
+            .mech(0)
+            .unwrap()
+            .limbs
+            .iter()
+            .find(|l| l.kind == LimbKind::Torso)
+            .unwrap()
+            .hp;
+        assert!(
+            m.apply_action(Action::Attack {
+                attacker_id: 10,
+                target_id: 0,
+                limb: LimbKind::Torso,
+            })
+            .is_ok()
+        );
         assert_eq!(m.mech(0).unwrap().at_field, 0);
+        let torso_mid = m
+            .mech(0)
+            .unwrap()
+            .limbs
+            .iter()
+            .find(|l| l.kind == LimbKind::Torso)
+            .unwrap()
+            .hp;
+        assert_eq!(torso_mid, torso_before, "player AT Field should absorb first hit");
+        assert!(
+            m.pending_fx
+                .iter()
+                .any(|fx| matches!(fx, CombatFx::AtFieldAbsorb { target_id: 0 })),
+            "fx: {:?}",
+            m.pending_fx
+        );
+        assert!(
+            m.pending_fx
+                .iter()
+                .any(|fx| matches!(fx, CombatFx::AtFieldBreak { target_id: 0 })),
+            "single charge should shatter; fx={:?}",
+            m.pending_fx
+        );
+        assert!(
+            m.log.iter().any(|l| l.contains("SHATTERS")),
+            "log: {:?}",
+            m.log
+        );
+
+        m.take_fx();
+        // Same enemy phase: refresh Splinter for a follow-up strike.
+        m.mech_mut(10).unwrap().acted = false;
+        m.mech_mut(10).unwrap().move_left = 5;
+        assert!(
+            m.apply_action(Action::Attack {
+                attacker_id: 10,
+                target_id: 0,
+                limb: LimbKind::Torso,
+            })
+            .is_ok()
+        );
+        let torso_hurt = m
+            .mech(0)
+            .unwrap()
+            .limbs
+            .iter()
+            .find(|l| l.kind == LimbKind::Torso)
+            .unwrap()
+            .hp;
+        assert!(torso_hurt < torso_before, "second hit should wound after shatter");
     }
 
     #[test]
@@ -1516,10 +1592,12 @@ mod tests {
     #[test]
     fn autoplay_style_still_wins_with_at_field() {
         let mut m = Mission::new_skirmish();
+        assert_eq!(m.mech(0).unwrap().at_field, 1);
+        assert_eq!(m.mech(11).unwrap().at_field, 2);
         autoplay_loop(&mut m, 20);
         assert!(
             m.is_won(),
-            "expected victory with AT Field; log={:?}",
+            "expected victory with player+Mass AT Field; log={:?}",
             m.log
         );
     }

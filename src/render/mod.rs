@@ -575,7 +575,7 @@ impl Arena {
                 };
                 push(&mut lights, [p.x, 0.55, p.z], color, intensity, range);
             }
-            // Idle AT Field aura on Mass while charges remain.
+            // Idle AT Field aura while charges remain (player + Mass).
             for mech in &mission.mechs {
                 if mech.destroyed || mech.at_field == 0 {
                     continue;
@@ -1035,7 +1035,7 @@ fn draw_impact_sparks(engine: &mut blade_engine::Engine, flashes: &[ImpactFlash]
     engine.add_debug_lines(&lines);
 }
 
-/// Octagon / hex-ish AT Field silhouette around charged Mass units.
+/// Octagon / hex-ish AT Field silhouette around charged units (player + Mass).
 fn draw_at_field_rings(
     engine: &mut blade_engine::Engine,
     mission: &Mission,
