@@ -38,6 +38,15 @@ pub enum Action {
     Wait { unit_id: u32 },
 }
 
+/// One-shot presentation hooks drained by the battle view after `apply_action`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CombatFx {
+    /// Cyan AT Field deflect on the target (no limb damage).
+    AtFieldAbsorb { target_id: u32 },
+    /// Last charge spent — field shatters.
+    AtFieldBreak { target_id: u32 },
+}
+
 #[derive(Debug)]
 pub struct Mission {
     pub grid: Grid,
@@ -49,6 +58,8 @@ pub struct Mission {
     pub log: Vec<String>,
     /// Enemy actions still to play out (one at a time for presentation).
     pub enemy_queue: Vec<Action>,
+    /// Presentation FX produced by the last applied action(s).
+    pub pending_fx: Vec<CombatFx>,
 }
 
 impl Mission {
@@ -75,7 +86,13 @@ impl Mission {
             city_hp: 100.0,
             log: vec!["Mission start: defend the city block.".into()],
             enemy_queue: Vec::new(),
+            pending_fx: Vec::new(),
         }
+    }
+
+    /// Drain presentation FX produced since the last call.
+    pub fn take_fx(&mut self) -> Vec<CombatFx> {
+        std::mem::take(&mut self.pending_fx)
     }
 
     pub fn living_mechs(&self, team: Team) -> impl Iterator<Item = &Mech> {
@@ -235,10 +252,34 @@ impl Mission {
                 if !flanked {
                     dmg *= 1.15;
                 }
-                target.apply_damage(limb, dmg);
-                let destroyed_t = target.destroyed;
+
+                // AT Field: absorb before limbs. Mass starts with charges.
+                let absorbed = target.try_absorb_at_field();
+                let remaining_field = target.at_field;
                 let tname = target.name.clone();
                 let was_enemy = matches!(target.team, Team::Enemy);
+                let mut destroyed_t = false;
+                if absorbed {
+                    self.pending_fx.push(CombatFx::AtFieldAbsorb { target_id });
+                    if remaining_field == 0 {
+                        self.pending_fx.push(CombatFx::AtFieldBreak { target_id });
+                        self.log.push(format!(
+                            "{name} strikes {tname} — AT Field absorbs, then SHATTERS!"
+                        ));
+                    } else {
+                        self.log.push(format!(
+                            "{name} strikes {tname} — AT Field absorbs! ({remaining_field} left)"
+                        ));
+                    }
+                } else {
+                    target.apply_damage(limb, dmg);
+                    destroyed_t = target.destroyed;
+                    self.log.push(format!(
+                        "{name} attacked {tname} ({limb}) for {dmg:.0} dmg{}",
+                        if destroyed_t { " — DESTROYED" } else { "" }
+                    ));
+                }
+
                 if let Some(a) = self.mech_mut(attacker_id) {
                     a.acted = true;
                     a.move_left = 0;
@@ -254,10 +295,6 @@ impl Mission {
                         }
                     }
                 }
-                self.log.push(format!(
-                    "{name} attacked {tname} ({limb}) for {dmg:.0} dmg{}",
-                    if destroyed_t { " — DESTROYED" } else { "" }
-                ));
                 if destroyed_t && was_enemy {
                     self.city_hp = (self.city_hp + 2.0).min(100.0);
                 }
@@ -658,5 +695,138 @@ mod tests {
             "queue: {:?}",
             m.enemy_queue
         );
+    }
+
+    #[test]
+    fn mass_starts_with_at_field() {
+        let m = Mission::new_skirmish();
+        assert_eq!(m.mech(11).unwrap().at_field, 2);
+        assert_eq!(m.mech(10).unwrap().at_field, 0);
+        assert_eq!(m.mech(0).unwrap().at_field, 0);
+    }
+
+    #[test]
+    fn mass_at_field_absorbs_then_takes_damage() {
+        let mut m = Mission::new_skirmish();
+        // Pull Mass into Coil range (opening spawn is 5 tiles away).
+        m.mech_mut(11).unwrap().position = IVec2::new(4, 3);
+        let torso_before = m
+            .mech(11)
+            .unwrap()
+            .limbs
+            .iter()
+            .find(|l| l.kind == LimbKind::Torso)
+            .unwrap()
+            .hp;
+        assert!(m
+            .apply_action(Action::Attack {
+                attacker_id: 0,
+                target_id: 11,
+                limb: LimbKind::Torso,
+            })
+            .is_ok());
+        assert_eq!(m.mech(11).unwrap().at_field, 1);
+        let torso_mid = m
+            .mech(11)
+            .unwrap()
+            .limbs
+            .iter()
+            .find(|l| l.kind == LimbKind::Torso)
+            .unwrap()
+            .hp;
+        assert_eq!(torso_mid, torso_before, "first hit should be absorbed");
+        assert!(
+            m.pending_fx
+                .iter()
+                .any(|fx| matches!(fx, CombatFx::AtFieldAbsorb { target_id: 11 })),
+            "fx: {:?}",
+            m.pending_fx
+        );
+        assert!(m
+            .apply_action(Action::Attack {
+                attacker_id: 1,
+                target_id: 11,
+                limb: LimbKind::Torso,
+            })
+            .is_ok());
+        assert_eq!(m.mech(11).unwrap().at_field, 0);
+        assert!(
+            m.pending_fx
+                .iter()
+                .any(|fx| matches!(fx, CombatFx::AtFieldBreak { target_id: 11 })),
+            "fx: {:?}",
+            m.pending_fx
+        );
+        let torso_after_break = m
+            .mech(11)
+            .unwrap()
+            .limbs
+            .iter()
+            .find(|l| l.kind == LimbKind::Torso)
+            .unwrap()
+            .hp;
+        assert_eq!(torso_after_break, torso_before, "shatter absorb still blocks");
+
+        m.end_player_turn();
+        m.take_fx();
+        assert!(m
+            .apply_action(Action::Attack {
+                attacker_id: 0,
+                target_id: 11,
+                limb: LimbKind::Torso,
+            })
+            .is_ok());
+        let torso_hurt = m
+            .mech(11)
+            .unwrap()
+            .limbs
+            .iter()
+            .find(|l| l.kind == LimbKind::Torso)
+            .unwrap()
+            .hp;
+        assert!(torso_hurt < torso_before, "third hit should wound");
+    }
+
+    #[test]
+    fn autoplay_style_still_wins_with_at_field() {
+        let mut m = Mission::new_skirmish();
+        for _ in 0..20 {
+            if m.is_won() || m.is_lost() {
+                break;
+            }
+            let player_ids: Vec<u32> = m.living_mechs(Team::Player).map(|x| x.id).collect();
+            for pid in player_ids {
+                if !m.mech(pid).map(|x| x.can_act()).unwrap_or(false) {
+                    continue;
+                }
+                let from = m.mech(pid).unwrap().position;
+                let Some(eid) = m
+                    .living_mechs(Team::Enemy)
+                    .min_by_key(|e| Grid::manhattan(from, e.position))
+                    .map(|e| e.id)
+                else {
+                    break;
+                };
+                let in_range = {
+                    let a = m.mech(pid).unwrap();
+                    let e = m.mech(eid).unwrap();
+                    Grid::manhattan(a.position, e.position) <= a.attack_range()
+                };
+                if in_range {
+                    let _ = m.apply_action(Action::Attack {
+                        attacker_id: pid,
+                        target_id: eid,
+                        limb: LimbKind::Torso,
+                    });
+                } else {
+                    let _ = m.apply_action(Action::Wait { unit_id: pid });
+                }
+            }
+            if m.is_won() || m.is_lost() {
+                break;
+            }
+            m.end_player_turn();
+        }
+        assert!(m.is_won(), "expected victory with AT Field; log={:?}", m.log);
     }
 }

@@ -159,6 +159,8 @@ pub struct Mech {
     pub acted: bool,
     /// `Some` for alien enemies; player mechs stay `None`.
     pub alien: Option<AlienKind>,
+    /// Remaining AT Field absorbs (Mass starts charged; Eva-ish deflect).
+    pub at_field: u8,
 }
 
 impl Mech {
@@ -181,6 +183,7 @@ impl Mech {
             move_left: 0,
             acted: false,
             alien: None,
+            at_field: 0,
         };
         m.refresh_turn();
         m
@@ -206,6 +209,7 @@ impl Mech {
             move_left: 0,
             acted: false,
             alien: None,
+            at_field: 0,
         };
         m.refresh_turn();
         m
@@ -246,6 +250,8 @@ impl Mech {
             move_left: 0,
             acted: false,
             alien: Some(kind),
+            // Mass pressure: two AT Field absorbs before limbs take damage.
+            at_field: if matches!(kind, AlienKind::Mass) { 2 } else { 0 },
         };
         m.refresh_turn();
         m
@@ -292,6 +298,15 @@ impl Mech {
             self.move_left = 0;
             self.acted = true;
         }
+    }
+
+    /// Spend one AT Field charge. Returns `true` if the strike was absorbed.
+    pub fn try_absorb_at_field(&mut self) -> bool {
+        if self.destroyed || self.at_field == 0 {
+            return false;
+        }
+        self.at_field -= 1;
+        true
     }
 
     pub fn mobility(&self) -> f32 {
