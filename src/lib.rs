@@ -635,6 +635,7 @@ impl Game {
                 self.selected_player,
                 self.selected_enemy,
                 self.impact_timer,
+                self.arena.camera_punch(),
             )
         };
 
