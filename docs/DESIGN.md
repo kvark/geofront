@@ -46,7 +46,7 @@ film stills.
 | Aliens | Splinter kite + Mass pressure; Mass AT Field absorbs first hits (no end-turn recharge); player mechs get one AT Field that recharges on End Turn; Angel FX until real art; high-sync core telegraph + core-strike bonus |
 | City | Destructible / living city ahead; collateral already affects protection % |
 | Base | Underground hangar is a stage today; facility sandbox is the roadmap |
-| Pilots | Sync / loyalty / stress already on HUD; high sync buffs damage, reads Angel cores, and core-strikes for bonus damage; portraits, dialogs, disobedience next |
+| Pilots | Sync / loyalty / stress already on HUD; AT Field shatter spikes stress / dips sync; high sync buffs damage, reads Angel cores, and core-strikes for bonus damage; portraits, dialogs, disobedience next |
 
 ## Non-goals
 

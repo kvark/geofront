@@ -396,6 +396,10 @@ impl Mission {
                 if destroyed_t && was_enemy {
                     self.city_hp = (self.city_hp + 2.0).min(100.0);
                 }
+                // Player AT Field 1→0: cockpit shock (stress spike + sync dip).
+                if absorbed && remaining_field == 0 {
+                    self.maybe_at_field_shatter_stress(target_id);
+                }
                 self.maybe_stress_spike(target_id, limb, before_limb, before_near);
                 // Damaging high-sync core strike: sharper crack FX/log.
                 // Absorbed hits still get the softer telegraph flash.
@@ -496,6 +500,47 @@ impl Mission {
             self.log.push(line);
             false
         }
+    }
+
+    /// When a player mech's AT Field shatters (last charge spent), spike pilot stress
+    /// and dip sync — same cockpit beat as heavy trauma (reuse stress HUD / refuse arm).
+    /// Mass / enemy shatter stays combat-FX only (no pilot psychology).
+    fn maybe_at_field_shatter_stress(&mut self, target_id: u32) {
+        let Some(mech) = self.mech(target_id) else {
+            return;
+        };
+        if !matches!(mech.team, Team::Player) {
+            return;
+        }
+        let Some(pid) = mech.pilot_id else {
+            return;
+        };
+        let mech_name = mech.name.clone();
+        {
+            let Some(pilot) = self.pilot_mut(pid) else {
+                return;
+            };
+            pilot.spike_from_hit();
+        }
+        let (line, flash) = {
+            let Some(pilot) = self.pilot(pid) else {
+                return;
+            };
+            let line = drama_line(
+                PilotDramaKind::StressSpike,
+                pilot,
+                &mech_name,
+                "AT Field shattered",
+            );
+            let flash = PilotHudFlash::new(PilotDramaKind::StressSpike, pilot, line.clone());
+            (line, flash)
+        };
+        self.pilot_flash = Some(flash);
+        self.pending_fx.push(CombatFx::PilotDrama {
+            unit_id: target_id,
+            kind: PilotDramaKind::StressSpike,
+        });
+        self.log.push(line);
     }
 
     /// Spike player-pilot stress when a limb is wrecked or the mech is near death.
@@ -1146,6 +1191,103 @@ mod tests {
     }
 
     #[test]
+    fn player_at_field_shatter_spikes_stress_and_dips_sync() {
+        let mut m = Mission::new_skirmish();
+        m.phase = TurnPhase::Enemy;
+        m.mech_mut(10).unwrap().position = IVec2::new(3, 3);
+        let stress0 = m.pilot(0).unwrap().stress;
+        let sync0 = m.pilot(0).unwrap().sync;
+
+        assert!(
+            m.apply_action(Action::Attack {
+                attacker_id: 10,
+                target_id: 0,
+                limb: LimbKind::Torso,
+            })
+            .is_ok()
+        );
+
+        assert_eq!(m.mech(0).unwrap().at_field, 0);
+        let p = m.pilot(0).unwrap();
+        assert!(p.stress > stress0, "shatter should spike stress; {stress0} -> {}", p.stress);
+        assert!(p.sync < sync0, "shatter should dip sync; {sync0} -> {}", p.sync);
+        assert!(p.pending_refuse, "shatter should arm one-shot refuse");
+        assert!(
+            m.log
+                .iter()
+                .any(|l| l.contains("AT Field shattered") && l.contains("may refuse next order")),
+            "log: {:?}",
+            m.log
+        );
+        assert!(
+            m.pilot_flash.as_ref().is_some_and(|f| {
+                matches!(f.kind, crate::characters::PilotDramaKind::StressSpike)
+                    && f.line.contains("AT Field shattered")
+            }),
+            "stress HUD flash; flash={:?}",
+            m.pilot_flash
+        );
+        assert!(
+            m.pending_fx.iter().any(|fx| matches!(
+                fx,
+                CombatFx::PilotDrama {
+                    unit_id: 0,
+                    kind: crate::characters::PilotDramaKind::StressSpike
+                }
+            )),
+            "PilotDrama fx; fx={:?}",
+            m.pending_fx
+        );
+    }
+
+    #[test]
+    fn mass_at_field_shatter_does_not_spike_player_stress() {
+        let mut m = Mission::new_skirmish();
+        m.phase = TurnPhase::Player;
+        // Drain Mass field to 1, then shatter — enemy only, no pilot psychology.
+        m.mech_mut(11).unwrap().at_field = 1;
+        m.mech_mut(0).unwrap().position = IVec2::new(4, 4);
+        m.mech_mut(11).unwrap().position = IVec2::new(4, 5);
+        let stress0 = m.pilot(0).unwrap().stress;
+        let sync0 = m.pilot(0).unwrap().sync;
+
+        assert!(
+            m.apply_action(Action::Attack {
+                attacker_id: 0,
+                target_id: 11,
+                limb: LimbKind::Torso,
+            })
+            .is_ok()
+        );
+        assert_eq!(m.mech(11).unwrap().at_field, 0);
+        assert!(
+            m.log.iter().any(|l| l.contains("SHATTERS")),
+            "Mass shatter log stays; log={:?}",
+            m.log
+        );
+        assert_eq!(m.pilot(0).unwrap().stress, stress0);
+        assert_eq!(m.pilot(0).unwrap().sync, sync0);
+        assert!(
+            m.pending_fx
+                .iter()
+                .all(|fx| !matches!(fx, CombatFx::PilotDrama { .. })),
+            "no pilot drama on Mass shatter; fx={:?}",
+            m.pending_fx
+        );
+        assert!(m.pilot_flash.is_none());
+    }
+
+    #[test]
+    fn autoplay_style_still_wins_with_at_field_shatter_stress() {
+        let mut m = Mission::new_skirmish();
+        assert_eq!(m.mech(0).unwrap().at_field, 1);
+        autoplay_loop(&mut m, 20);
+        assert!(
+            m.is_won(),
+            "expected VICTORY with AT Field shatter stress; log={:?}",
+            m.log
+        );
+    }
 
     #[test]
     fn player_at_field_recharges_on_end_turn() {
@@ -1197,6 +1339,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn mass_at_field_absorbs_then_takes_damage() {
         let mut m = Mission::new_skirmish();
         // Pull Mass into Coil range (opening spawn is 5 tiles away).

@@ -447,7 +447,7 @@ impl Pilot {
         panic.clamp(0.18, 0.55)
     }
 
-    /// Spike stress after a wrecked limb or near-death; arm a one-shot refuse.
+    /// Spike stress after trauma (wrecked limb, near-death, AT Field shatter); arm a one-shot refuse.
     pub fn spike_from_hit(&mut self) {
         self.stress = (self.stress + STRESS_SPIKE).clamp(0.0, 1.0);
         self.sync = (self.sync - SYNC_DIP).clamp(0.2, 1.0);
