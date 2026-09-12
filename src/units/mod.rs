@@ -170,7 +170,7 @@ pub struct Mech {
     pub acted: bool,
     /// `Some` for alien enemies; player mechs stay `None`.
     pub alien: Option<AlienKind>,
-    /// Remaining AT Field absorbs (Mass starts charged; Eva-ish deflect).
+    /// Remaining AT Field absorbs (player mechs: 1; Mass: 2; Eva-ish deflect).
     pub at_field: u8,
 }
 
@@ -194,7 +194,8 @@ impl Mech {
             move_left: 0,
             acted: false,
             alien: None,
-            at_field: 0,
+            // Eva-ish starter shield: one cyan absorb before limbs take damage.
+            at_field: 1,
         };
         m.refresh_turn();
         m

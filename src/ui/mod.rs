@@ -125,22 +125,16 @@ fn battle_panel(
                     SyncBand::Mid => "",
                 })
                 .unwrap_or("");
+            let at_mark = if m.at_field > 0 {
+                format!("  AT×{}", m.at_field)
+            } else {
+                String::new()
+            };
             let label = if m.destroyed {
                 format!("{} (destroyed)", m.name)
             } else if stressed {
                 format!(
-                    "{} {}  ({},{})  {:.0}/{:.0}  MP{}  ⚠",
-                    m.name,
-                    m.facing.label(),
-                    m.position.x,
-                    m.position.y,
-                    hp,
-                    max,
-                    m.move_left
-                )
-            } else {
-                format!(
-                    "{} {}  ({},{})  {:.0}/{:.0}  MP{}{}",
+                    "{} {}  ({},{})  {:.0}/{:.0}  MP{}{}  ⚠",
                     m.name,
                     m.facing.label(),
                     m.position.x,
@@ -148,6 +142,19 @@ fn battle_panel(
                     hp,
                     max,
                     m.move_left,
+                    at_mark
+                )
+            } else {
+                format!(
+                    "{} {}  ({},{})  {:.0}/{:.0}  MP{}{}{}",
+                    m.name,
+                    m.facing.label(),
+                    m.position.x,
+                    m.position.y,
+                    hp,
+                    max,
+                    m.move_left,
+                    at_mark,
                     sync_mark
                 )
             };
@@ -155,6 +162,16 @@ fn battle_panel(
                 *selected_player = m.id;
             }
             if selected && !m.destroyed {
+                if m.at_field > 0 {
+                    cols[0].colored_label(
+                        egui::Color32::from_rgb(100, 210, 255),
+                        format!(
+                            "AT Field active ({} absorb{})",
+                            m.at_field,
+                            if m.at_field == 1 { "" } else { "s" }
+                        ),
+                    );
+                }
                 if let Some(pid) = m.pilot_id {
                     if let Some(p) = mission.pilot(pid) {
                         cols[0].horizontal(|ui| {
