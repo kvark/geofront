@@ -18,6 +18,17 @@ const SODIUM_CELLS: [(i32, i32); 5] = [(1, 1), (1, 6), (6, 1), (6, 6), (3, 4)];
 /// Default player strike length when no profile is supplied.
 const DEFAULT_STRIKE_SECS: f32 = 0.55;
 
+/// Brief hit flash / sodium kick (seconds remaining at onset).
+const IMPACT_FLASH_SECS: f32 = 0.32;
+/// Sharp camera punch when the strike lands.
+const IMPACT_PUNCH_SECS: f32 = 0.16;
+
+/// 1 at onset, quadratic falloff — lights, tints, and camera punch share this.
+pub fn impact_envelope(remaining: f32, duration: f32) -> f32 {
+    let k = (remaining / duration.max(1e-4)).clamp(0.0, 1.0);
+    k * k
+}
+
 /// Per-attacker wind-up + strike timing (aliens differ).
 #[derive(Debug, Clone, Copy)]
 pub struct AttackAnim {
@@ -110,7 +121,10 @@ struct MechVisual {
     lunge_amp: f32,
     punch_anim_speed: f32,
     hit: f32,
+    hit_duration: f32,
     punch_dir: Vec3,
+    /// Incoming strike direction (attacker → target) for knockback / sparks.
+    hit_dir: Vec3,
     clip: MechClip,
     /// Once Death plays, never restart or leave it.
     death_locked: bool,
@@ -125,6 +139,14 @@ struct PendingHit {
     target_id: u32,
     delay: f32,
     duration: f32,
+    dir: Vec3,
+}
+
+struct ImpactFlash {
+    pos: Vec3,
+    t: f32,
+    duration: f32,
+    dir: Vec3,
 }
 
 pub struct Arena {
@@ -132,6 +154,9 @@ pub struct Arena {
     visuals: HashMap<u32, MechVisual>,
     stage_handles: Vec<blade_engine::ObjectHandle>,
     pending_hits: Vec<PendingHit>,
+    impact_flashes: Vec<ImpactFlash>,
+    /// Remaining camera-punch seconds (sharp kick at impact).
+    punch_t: f32,
     /// Persistent local-light handles (Blade tip uses handle-based LocalLight).
     light_handles: Vec<blade_engine::LightHandle>,
 }
@@ -165,6 +190,8 @@ impl Arena {
             visuals,
             stage_handles,
             pending_hits: Vec::new(),
+            impact_flashes: Vec::new(),
+            punch_t: 0.0,
             light_handles: Vec::new(),
         }
     }
@@ -175,6 +202,8 @@ impl Arena {
         }
         self.visuals.clear();
         self.pending_hits.clear();
+        self.impact_flashes.clear();
+        self.punch_t = 0.0;
         for h in self.stage_handles.drain(..) {
             engine.remove_object(h);
         }
@@ -193,6 +222,7 @@ impl Arena {
         profile: AttackAnim,
         hit_target: Option<u32>,
     ) -> f32 {
+        let mut strike_dir = Vec3::Z;
         if let Some(v) = self.visuals.get_mut(&id) {
             if v.death_locked {
                 return 0.0;
@@ -203,6 +233,7 @@ impl Arena {
             } else {
                 Vec3::Z
             };
+            strike_dir = v.punch_dir;
             v.telegraph_duration = profile.telegraph.max(0.01);
             v.telegraph = profile.telegraph;
             v.punch_duration = profile.strike.max(0.01);
@@ -218,19 +249,50 @@ impl Arena {
                 target_id: tid,
                 delay: profile.telegraph,
                 duration: profile.hit_duration,
+                dir: strike_dir,
             });
         }
         profile.total()
     }
 
-    pub fn play_hit(&mut self, engine: &mut blade_engine::Engine, id: u32, duration: f32) {
+    pub fn play_hit(
+        &mut self,
+        engine: &mut blade_engine::Engine,
+        id: u32,
+        duration: f32,
+        dir: Vec3,
+    ) {
         if let Some(v) = self.visuals.get_mut(&id) {
             if v.death_locked || v.clip == MechClip::Death {
                 return;
             }
             v.hit = duration.max(0.1);
+            v.hit_duration = duration.max(0.1);
+            if dir.length_squared() > 1e-4 {
+                v.hit_dir = dir.normalize();
+            }
             set_clip(engine, v, MechClip::Hit, false);
         }
+    }
+
+    /// Flash + camera punch at the contact point. Fires even if the target is already a wreck.
+    fn spawn_impact(&mut self, target_id: u32, dir: Vec3) {
+        let pos = self
+            .visuals
+            .get(&target_id)
+            .map(|v| v.pos + Vec3::Y * 1.35)
+            .unwrap_or(Vec3::Y * 1.35);
+        self.impact_flashes.push(ImpactFlash {
+            pos,
+            t: IMPACT_FLASH_SECS,
+            duration: IMPACT_FLASH_SECS,
+            dir,
+        });
+        self.punch_t = self.punch_t.max(IMPACT_PUNCH_SECS);
+    }
+
+    pub fn camera_punch(&self) -> f32 {
+        self.punch_t
     }
 
     /// Street lamps / hangar fixtures + a brief impact flash.
@@ -276,15 +338,35 @@ impl Arena {
                 // Color is deep orange (not creamy white) for Tokyo-3 night.
                 // Lavapipe reads pools weakly on flat Kenney asphalt — brighter,
                 // larger falloff, slightly lower so the street gets the lobe.
+                let kick = self
+                    .impact_flashes
+                    .iter()
+                    .map(|f| impact_envelope(f.t, f.duration))
+                    .fold(0.0f32, f32::max);
                 let sodium = [1.0, 0.55, 0.14];
+                let sodium_i = 420.0 * (1.0 + 2.2 * kick);
+                let sodium_r = 17.5 + 4.0 * kick;
                 for &(x, z) in &SODIUM_CELLS {
                     let p = cell_to_world(IVec2::new(x, z));
-                    push(&mut lights, [p.x, 2.05, p.z], sodium, 420.0, 17.5);
+                    push(&mut lights, [p.x, 2.05, p.z], sodium, sodium_i, sodium_r);
                 }
             }
         }
 
         if self.kind == ViewMode::Battle {
+            // Impact pulse first so it wins a slot under the 8-light cap.
+            for flash in &self.impact_flashes {
+                let k = impact_envelope(flash.t, flash.duration);
+                let p = flash.pos + flash.dir * 0.2;
+                // Low, wide — lavapipe reads ground pools better than high points.
+                push(
+                    &mut lights,
+                    [p.x, 0.55, p.z],
+                    [1.0, 0.78, 0.32],
+                    1100.0 * k,
+                    9.5,
+                );
+            }
             for vis in self.visuals.values() {
                 if vis.punch > 0.0 {
                     let flash = vis.pos + Vec3::Y * 1.6 + vis.punch_dir * 0.8;
@@ -348,20 +430,27 @@ impl Arena {
             return;
         }
 
-        // Deferred hit reactions land when the strike starts (end of telegraph).
+        // Deferred hit reactions + impact VFX land when the strike starts.
         let mut due = Vec::new();
         self.pending_hits.retain_mut(|ph| {
             ph.delay -= dt;
             if ph.delay <= 0.0 {
-                due.push((ph.target_id, ph.duration));
+                due.push((ph.target_id, ph.duration, ph.dir));
                 false
             } else {
                 true
             }
         });
-        for (tid, dur) in due {
-            self.play_hit(engine, tid, dur);
+        for (tid, dur, dir) in due {
+            self.play_hit(engine, tid, dur, dir);
+            self.spawn_impact(tid, dir);
         }
+
+        self.punch_t = (self.punch_t - dt).max(0.0);
+        for flash in &mut self.impact_flashes {
+            flash.t = (flash.t - dt).max(0.0);
+        }
+        self.impact_flashes.retain(|f| f.t > 0.0);
 
         for mech in &mission.mechs {
             let Some(vis) = self.visuals.get_mut(&mech.id) else {
@@ -440,7 +529,12 @@ impl Arena {
             } else {
                 0.0
             };
-            let pos = vis.pos + Vec3::Y * bob_y + vis.punch_dir * lean;
+            let knock = if vis.hit > 0.0 {
+                vis.hit_dir * (0.28 * impact_envelope(vis.hit, vis.hit_duration))
+            } else {
+                Vec3::ZERO
+            };
+            let pos = vis.pos + Vec3::Y * bob_y + vis.punch_dir * lean + knock;
             let q = Quat::from_rotation_y(vis.yaw);
             engine.teleport_object(
                 vis.handle,
@@ -464,6 +558,13 @@ impl Arena {
                 tint[0] = (tint[0] + 0.55 * build).min(2.2);
                 tint[1] = (tint[1] + 0.25 * build).min(2.0);
                 tint[2] = (tint[2] + 0.35 * build).min(2.2);
+            }
+            if vis.hit > 0.0 {
+                // Hot white-orange pop so the beat reads under lavapipe.
+                let flash = impact_envelope(vis.hit, vis.hit_duration);
+                tint[0] = (tint[0] + 3.2 * flash).min(5.0);
+                tint[1] = (tint[1] + 2.4 * flash).min(4.4);
+                tint[2] = (tint[2] + 1.1 * flash).min(3.2);
             }
             engine.set_color_tint(vis.handle, tint);
 
@@ -511,6 +612,7 @@ impl Arena {
         }
 
         draw_tactical_overlay(engine, mission, selected);
+        draw_impact_sparks(engine, &self.impact_flashes);
     }
 }
 
@@ -583,6 +685,56 @@ fn draw_tactical_overlay(engine: &mut blade_engine::Engine, mission: &Mission, s
         },
     });
 
+    engine.add_debug_lines(&lines);
+}
+
+fn draw_impact_sparks(engine: &mut blade_engine::Engine, flashes: &[ImpactFlash]) {
+    if flashes.is_empty() {
+        return;
+    }
+    let mut lines = Vec::new();
+    for flash in flashes {
+        let k = impact_envelope(flash.t, flash.duration);
+        if k < 0.04 {
+            continue;
+        }
+        let color = 0xFF_FF_EE_88;
+        let rays = 10;
+        for i in 0..rays {
+            let a = (i as f32) * std::f32::consts::TAU / rays as f32 + flash.t * 11.0;
+            let lift = if i % 2 == 0 { 0.55 } else { 0.12 };
+            let dir = Vec3::new(a.cos(), lift, a.sin());
+            let len = 0.35 + 1.15 * k;
+            lines.push(blade_render::DebugLine {
+                a: blade_render::DebugPoint {
+                    pos: flash.pos.into(),
+                    color,
+                },
+                b: blade_render::DebugPoint {
+                    pos: (flash.pos + dir * len).into(),
+                    color,
+                },
+            });
+        }
+        let across = flash.dir.cross(Vec3::Y).normalize_or_zero() * (0.75 * k);
+        let along = flash.dir * (0.55 * k);
+        for (d0, d1) in [
+            (across, -across),
+            (along, -along),
+            (Vec3::Y * 0.55 * k, Vec3::Y * -0.12),
+        ] {
+            lines.push(blade_render::DebugLine {
+                a: blade_render::DebugPoint {
+                    pos: (flash.pos + d0).into(),
+                    color: 0xFF_FF_FF_CC,
+                },
+                b: blade_render::DebugPoint {
+                    pos: (flash.pos + d1).into(),
+                    color: 0xFF_FF_AA_44,
+                },
+            });
+        }
+    }
     engine.add_debug_lines(&lines);
 }
 
@@ -918,7 +1070,7 @@ fn spawn_mech(engine: &mut blade_engine::Engine, mech: &Mech) -> MechVisual {
         blade_engine::DynamicInput::SetPosition,
     );
     let walk_index = if path.contains("George") { 16 } else { 15 };
-    let mut vis = MechVisual {
+    let vis = MechVisual {
         handle,
         pos,
         yaw,
@@ -930,7 +1082,9 @@ fn spawn_mech(engine: &mut blade_engine::Engine, mech: &Mech) -> MechVisual {
         lunge_amp: 0.55,
         punch_anim_speed: 1.15,
         hit: 0.0,
+        hit_duration: 0.48,
         punch_dir: Vec3::Z,
+        hit_dir: Vec3::Z,
         clip: MechClip::Hit, // force the first set_clip to apply Idle
         death_locked: false,
         death_age: 0.0,
@@ -961,12 +1115,14 @@ fn frame_camera(eye: Vec3, focus: Vec3, fov_y: f32) -> blade_engine::FrameCamera
 }
 
 /// Low hero camera. When `impact_t` is > 0 (seconds remaining),
-/// pull into a tighter, more dramatic impact framing.
+/// pull into a tighter, more dramatic impact framing. `punch_t` is a
+/// short extra kick at the moment the strike lands.
 pub fn combat_camera(
     mission: &Mission,
     selected_player: u32,
     selected_enemy: u32,
     impact_t: f32,
+    punch_t: f32,
 ) -> blade_engine::FrameCamera {
     let player = mission
         .mechs
@@ -1002,14 +1158,18 @@ pub fn combat_camera(
 
     let k = (impact_t / 1.15).clamp(0.0, 1.0);
     let k = k * k;
+    let punch = impact_envelope(punch_t, IMPACT_PUNCH_SECS);
 
     // Over-the-shoulder street shot: stay inside the 8×8 so outer canyon
     // walls frame the lane instead of clipping the lens. Slightly raised /
     // pulled back so the near hero mech isn't cropped mid-shot.
-    let dist = 7.2 - k * 1.5;
-    let side_off = 2.85 - k * 0.7;
-    let height = 3.25 - k * 0.5;
-    let fov = 0.72 + k * 0.10;
+    // Punch is a sharp FOV/dolly jolt (anime hit-stop beat), not a rewrite
+    // of the existing pull-in.
+    let dist = 7.2 - k * 1.5 - punch * 0.65;
+    let jolt = (punch_t * 53.0).sin() * punch * 0.22;
+    let side_off = 2.85 - k * 0.7 + jolt;
+    let height = 3.25 - k * 0.5 + punch * 0.10;
+    let fov = 0.72 + k * 0.10 + punch * 0.09;
 
     let eye = focus - along * dist + side * side_off + Vec3::Y * height;
     // Look slightly above foot level so the shot reads more horizontal.
@@ -1163,5 +1323,18 @@ impl FlyCam {
 
     pub fn camera(&self) -> blade_engine::FrameCamera {
         frame_camera(self.pos, self.pos + self.look_dir(), 0.85)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn impact_envelope_hot_at_onset() {
+        assert!((impact_envelope(0.22, 0.22) - 1.0).abs() < 1e-5);
+        assert!(impact_envelope(0.0, 0.22) < 0.01);
+        let mid = impact_envelope(0.11, 0.22);
+        assert!(mid > 0.20 && mid < 0.30, "mid={mid}");
     }
 }
