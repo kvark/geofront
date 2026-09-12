@@ -1,6 +1,8 @@
 //! Turn manager, actions, telegraphs (optional), external support requests.
 
-use crate::units::{AlienKind, Facing, LimbKind, Mech, Pilot, Team, HEAVY_LIMB_RATIO};
+use crate::units::{
+    AlienKind, Facing, LimbKind, Mech, Pilot, SyncBand, Team, HEAVY_LIMB_RATIO, SYNC_CRIT_MULT,
+};
 use glam::IVec2;
 
 #[derive(Debug)]
@@ -230,7 +232,7 @@ impl Mission {
                     return Err("Not this team's turn".into());
                 }
 
-                let (attacker_pos, facing, firepower, name, range, destroyed) = {
+                let (attacker_pos, facing, firepower, name, range, destroyed, pilot_id) = {
                     let a = self.mech(attacker_id).ok_or("Unknown attacker")?;
                     (
                         a.position,
@@ -239,6 +241,7 @@ impl Mission {
                         a.name.clone(),
                         a.attack_range(),
                         a.destroyed,
+                        a.pilot_id,
                     )
                 };
                 if destroyed {
@@ -255,11 +258,13 @@ impl Mission {
                     return Ok(ApplyResult::Skipped);
                 }
 
-                let target = self.mech_mut(target_id).ok_or("Unknown target")?;
-                if target.destroyed {
+                let (tpos, target_destroyed) = {
+                    let target = self.mech(target_id).ok_or("Unknown target")?;
+                    (target.position, target.destroyed)
+                };
+                if target_destroyed {
                     return Err("Target already destroyed".into());
                 }
-                let tpos = target.position;
                 let dist = Grid::manhattan(attacker_pos, tpos);
                 if dist > range {
                     return Err("Out of range".into());
@@ -274,6 +279,38 @@ impl Mission {
                 if !flanked {
                     dmg *= 1.15;
                 }
+
+                // Pilot–mech sync: high sync buffs damage / opens crits; low sync weakens.
+                let mut sync_tag = String::new();
+                if matches!(team, Team::Player) {
+                    if let Some(pid) = pilot_id {
+                        if let Some(pilot) = self.pilot(pid) {
+                            let mult = pilot.sync_damage_mult();
+                            dmg *= mult;
+                            let crit_chance = pilot.sync_crit_chance();
+                            let roll = Self::sync_roll(self.turn, attacker_id);
+                            let crit = crit_chance > 0.0 && roll < crit_chance;
+                            if crit {
+                                dmg *= SYNC_CRIT_MULT;
+                            }
+                            let sync_pct = (pilot.sync * 100.0).round();
+                            sync_tag = match (pilot.sync_band(), crit) {
+                                (_, true) => {
+                                    format!(" — CRIT (sync {sync_pct:.0}%)")
+                                }
+                                (SyncBand::High, false) => {
+                                    format!(" (high sync ×{mult:.2})")
+                                }
+                                (SyncBand::Low, false) => {
+                                    format!(" (low sync ×{mult:.2})")
+                                }
+                                (SyncBand::Mid, false) => String::new(),
+                            };
+                        }
+                    }
+                }
+
+                let target = self.mech_mut(target_id).ok_or("Unknown target")?;
                 let before_limb = target.limb_ratio(limb);
                 let before_near = target.is_near_death();
 
@@ -299,7 +336,7 @@ impl Mission {
                     target.apply_damage(limb, dmg);
                     destroyed_t = target.destroyed;
                     self.log.push(format!(
-                        "{name} attacked {tname} ({limb}) for {dmg:.0} dmg{}",
+                        "{name} attacked {tname} ({limb}) for {dmg:.0} dmg{sync_tag}{}",
                         if destroyed_t { " — DESTROYED" } else { "" }
                     ));
                 }
@@ -428,6 +465,11 @@ impl Mission {
         self.log.push(format!(
             "{pname} reels in {mech_name} — {reason}; stress {stress_pct:.0}% (may refuse next order)"
         ));
+    }
+
+    /// Deterministic 0–1 roll for sync crits (stable in tests / autoplay).
+    fn sync_roll(turn: u32, unit_id: u32) -> f32 {
+        ((turn.wrapping_mul(31) + unit_id.wrapping_mul(13)) % 100) as f32 / 100.0
     }
 
     fn refresh_team(&mut self, team: Team) {
@@ -1045,6 +1087,126 @@ mod tests {
         );
     }
 
+    fn torso_hp(m: &Mission, id: u32) -> f32 {
+        m.mech(id)
+            .unwrap()
+            .limbs
+            .iter()
+            .find(|l| l.kind == LimbKind::Torso)
+            .unwrap()
+            .hp
+    }
+
+    #[test]
+    fn default_sync_attack_matches_baseline_damage() {
+        let mut m = Mission::new_skirmish();
+        let before = torso_hp(&m, 10);
+        m.apply_action(Action::Attack {
+            attacker_id: 0,
+            target_id: 10,
+            limb: LimbKind::Torso,
+        })
+        .unwrap();
+        let dealt = before - torso_hp(&m, 10);
+        // firepower 1.0, facing toward target → 25 * 1.15 = 28.75
+        assert!((dealt - 28.75).abs() < 0.01, "dealt={dealt}");
+        assert!(
+            m.log
+                .iter()
+                .any(|l| l.contains("attacked") && !l.contains("sync")),
+            "default mid sync should not tag the log; {:?}",
+            m.log
+        );
+    }
+
+    #[test]
+    fn high_sync_deals_more_damage_and_logs() {
+        let mut m = Mission::new_skirmish();
+        m.pilot_mut(0).unwrap().sync = 0.95;
+        let before = torso_hp(&m, 10);
+        m.apply_action(Action::Attack {
+            attacker_id: 0,
+            target_id: 10,
+            limb: LimbKind::Torso,
+        })
+        .unwrap();
+        let dealt = before - torso_hp(&m, 10);
+        assert!(
+            dealt > 28.75 + 1.0,
+            "high sync should hit harder; dealt={dealt}"
+        );
+        assert!(
+            m.log
+                .iter()
+                .any(|l| l.contains("high sync") || l.contains("CRIT (sync")),
+            "log: {:?}",
+            m.log
+        );
+    }
+
+    #[test]
+    fn low_sync_deals_less_damage_and_logs() {
+        let mut m = Mission::new_skirmish();
+        m.pilot_mut(0).unwrap().sync = 0.30;
+        let before = torso_hp(&m, 10);
+        m.apply_action(Action::Attack {
+            attacker_id: 0,
+            target_id: 10,
+            limb: LimbKind::Torso,
+        })
+        .unwrap();
+        let dealt = before - torso_hp(&m, 10);
+        assert!(
+            dealt < 28.75 - 1.0,
+            "low sync should hit softer; dealt={dealt}"
+        );
+        assert!(
+            m.log.iter().any(|l| l.contains("low sync")),
+            "log: {:?}",
+            m.log
+        );
+    }
+
+    #[test]
+    fn high_sync_can_crit() {
+        let mut m = Mission::new_skirmish();
+        // Turn 1 / unit 0: sync_roll = (31 + 0) % 100 / 100 = 0.31
+        // sync 1.0 → crit_chance 0.25 — no crit at 0.31.
+        // Find a turn where roll < 0.25 with sync 1.0.
+        m.pilot_mut(0).unwrap().sync = 1.0;
+        let mut crit_seen = false;
+        for turn in 1..40 {
+            m.turn = turn;
+            m.mech_mut(0).unwrap().refresh_turn();
+            // Reset target torso so we can keep attacking.
+            if let Some(limb) = m
+                .mech_mut(10)
+                .unwrap()
+                .limbs
+                .iter_mut()
+                .find(|l| l.kind == LimbKind::Torso)
+            {
+                limb.hp = limb.max_hp;
+            }
+            m.mech_mut(10).unwrap().destroyed = false;
+            m.phase = TurnPhase::Player;
+            m.log.clear();
+            let _ = m.apply_action(Action::Attack {
+                attacker_id: 0,
+                target_id: 10,
+                limb: LimbKind::Torso,
+            });
+            if m.log.iter().any(|l| l.contains("CRIT (sync")) {
+                crit_seen = true;
+                break;
+            }
+        }
+        assert!(
+            crit_seen,
+            "expected a deterministic high-sync crit within 40 turns"
+        );
+    }
+
     fn autoplay_loop(m: &mut Mission, max_turns: u32) {
         for _ in 0..max_turns {
             if m.is_won() || m.is_lost() {
@@ -1099,6 +1261,20 @@ mod tests {
         assert!(
             m.is_won(),
             "expected victory even if a pilot skips; log={:?}",
+            m.log
+        );
+    }
+
+    #[test]
+    fn autoplay_style_still_wins_with_sync_buffs() {
+        let mut m = Mission::new_skirmish();
+        // One pilot redlined, one frayed — still a winnable skirmish.
+        m.pilot_mut(0).unwrap().sync = 0.95;
+        m.pilot_mut(1).unwrap().sync = 0.35;
+        autoplay_loop(&mut m, 20);
+        assert!(
+            m.is_won(),
+            "expected victory with sync buffs/penalties; log={:?}",
             m.log
         );
     }
