@@ -189,7 +189,7 @@ fn battle_panel(
                                 cols[0].colored_label(
                                     egui::Color32::from_rgb(100, 220, 255),
                                     format!(
-                                        "⚡ high sync — strikes ×{:.2}, crit window",
+                                        "⚡ high sync — strikes ×{:.2}, crit window, sees Angel cores",
                                         p.sync_damage_mult()
                                     ),
                                 );
@@ -271,6 +271,20 @@ fn battle_panel(
                         if m.at_field == 1 { "" } else { "s" }
                     ),
                 );
+            }
+            if selected && !m.destroyed && m.alien.is_some() {
+                let sees = mission
+                    .mech(*selected_player)
+                    .and_then(|pm| pm.pilot_id)
+                    .and_then(|id| mission.pilot(id))
+                    .map(|p| p.can_see_core())
+                    .unwrap_or(false);
+                if sees {
+                    cols[1].colored_label(
+                        egui::Color32::from_rgb(220, 190, 255),
+                        "core visible — high sync reads the pattern",
+                    );
+                }
             }
         }
     });
@@ -362,12 +376,15 @@ fn battle_panel(
             for line in mission.log.iter().rev().take(40).rev() {
                 let drama = line.contains("may refuse next order")
                     || line.contains("refuses the")
-                    || line.contains("steadies");
+                    || line.contains("steadies")
+                    || line.contains("sees the pattern");
                 if drama {
                     let color = if line.contains("refuses the") {
                         egui::Color32::from_rgb(255, 120, 120)
                     } else if line.contains("may refuse") {
                         egui::Color32::from_rgb(255, 180, 90)
+                    } else if line.contains("sees the pattern") {
+                        egui::Color32::from_rgb(200, 170, 255)
                     } else {
                         egui::Color32::from_rgb(160, 220, 170)
                     };
