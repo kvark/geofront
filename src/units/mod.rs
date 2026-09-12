@@ -389,6 +389,25 @@ impl Mech {
     }
 }
 
+/// Sync band for HUD / combat feedback (Evangelion-style sync ratio feel).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncBand {
+    /// Sync ≥ 85% — stronger strikes, crit window.
+    High,
+    Mid,
+    /// Sync ≤ 45% — weaker strikes.
+    Low,
+}
+
+/// Sync at or above this is "high" (damage/crit buff).
+pub const SYNC_HIGH: f32 = 0.85;
+/// Sync at or below this is "low" (damage penalty).
+pub const SYNC_LOW: f32 = 0.45;
+/// Default pilot sync — combat multiplier is 1.0× here.
+pub const SYNC_BASELINE: f32 = 0.7;
+/// Crit damage multiplier when a high-sync roll lands.
+pub const SYNC_CRIT_MULT: f32 = 1.5;
+
 #[derive(Debug)]
 pub struct Pilot {
     pub id: u32,
@@ -405,7 +424,7 @@ impl Pilot {
         Self {
             id,
             name: name.into(),
-            sync: 0.7,
+            sync: SYNC_BASELINE,
             loyalty: 0.8,
             stress: 0.1,
             pending_refuse: false,
@@ -432,6 +451,28 @@ impl Pilot {
         self.stress = (self.stress + STRESS_SPIKE).clamp(0.0, 1.0);
         self.sync = (self.sync - SYNC_DIP).clamp(0.2, 1.0);
         self.pending_refuse = true;
+    }
+
+    pub fn sync_band(&self) -> SyncBand {
+        if self.sync >= SYNC_HIGH {
+            SyncBand::High
+        } else if self.sync <= SYNC_LOW {
+            SyncBand::Low
+        } else {
+            SyncBand::Mid
+        }
+    }
+
+    /// Attack damage multiplier from pilot–mech sync.
+    /// Default sync (0.7) is 1.0× so baseline skirmish damage is unchanged.
+    pub fn sync_damage_mult(&self) -> f32 {
+        let mult = 1.0 + (self.sync - SYNC_BASELINE) * 0.75;
+        mult.clamp(0.65, 1.40)
+    }
+
+    /// Crit chance from high sync (0 below 80%, up to 25% at full sync).
+    pub fn sync_crit_chance(&self) -> f32 {
+        ((self.sync - 0.80) / 0.20).clamp(0.0, 1.0) * 0.25
     }
 }
 
@@ -466,5 +507,31 @@ mod tests {
         m.apply_damage(LimbKind::Torso, 75.0);
         assert!(m.limb_ratio(LimbKind::Torso) <= NEAR_DEATH_TORSO_RATIO);
         assert!(m.is_near_death());
+    }
+
+    #[test]
+    fn default_sync_is_neutral_damage() {
+        let p = Pilot::new(0, "Nori");
+        assert!((p.sync_damage_mult() - 1.0).abs() < 1e-5);
+        assert_eq!(p.sync_band(), SyncBand::Mid);
+        assert_eq!(p.sync_crit_chance(), 0.0);
+    }
+
+    #[test]
+    fn high_sync_buffs_damage_and_opens_crit() {
+        let mut p = Pilot::new(0, "Nori");
+        p.sync = 0.95;
+        assert!(p.sync_damage_mult() > 1.15);
+        assert_eq!(p.sync_band(), SyncBand::High);
+        assert!(p.sync_crit_chance() > 0.15);
+    }
+
+    #[test]
+    fn low_sync_weakens_damage() {
+        let mut p = Pilot::new(0, "Nori");
+        p.sync = 0.30;
+        assert!(p.sync_damage_mult() < 0.85);
+        assert_eq!(p.sync_band(), SyncBand::Low);
+        assert_eq!(p.sync_crit_chance(), 0.0);
     }
 }
