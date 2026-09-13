@@ -38,6 +38,14 @@ Reference fantasy: Evangelion / Tokyo-3 city battle stills. Art budget is Kenney
 city kits + Quaternius mechs (CC0) — aim for *anime-adjacent screenshots*, not
 film stills.
 
+### Shader overlay
+
+Stock Blade WGSL comes from `blade_render::shader_dir()` (no full-tree vendor).
+The only game override is `assets/shaders/raster.wgsl` (Tokyo-3 twilight sky,
+cool rim, procedural window glitter, warm depth haze). Native materializes
+stock + overlay under `asset-cache/shaders/`; WASM embeds the same merge via
+`build.rs` + `include_dir!`. Details: [assets/README.md](../assets/README.md).
+
 ## Mechanics (locked direction)
 
 | Layer | Direction |

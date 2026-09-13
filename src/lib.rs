@@ -45,17 +45,17 @@ pub fn run() {
         return;
     }
 
-    // On native, shaders must exist on disk. On WASM they are embedded into the VFS.
+    // Native shaders come from blade_render::shader_dir() (+ optional overlays).
+    // WASM mounts a build.rs-merged tree into the VFS.
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let shaders = assets_dir().join("shaders");
-        if !shaders.is_dir() {
+        let stock = blade_render::shader_dir();
+        if !stock.is_dir() {
             eprintln!(
-                "Missing assets/shaders.\n\
-                 Run: ./scripts/fetch-shaders.sh\n\
-                 Or:  cp -r ../redline/assets/shaders ./assets/shaders\n\
+                "Missing blade-render WGSL at {}\n\
                  Smoke test still works without shaders:\n\
-                   cargo run -- --smoke"
+                   cargo run -- --smoke",
+                stock.display()
             );
             std::process::exit(1);
         }
@@ -86,11 +86,13 @@ fn assets_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets")
 }
 
-/// Embed `assets/` into Blade's VFS so WASM can load shaders/models without a filesystem.
+/// Embed `assets/` (models) plus build.rs-merged WGSL into Blade's VFS for WASM.
 #[cfg(target_arch = "wasm32")]
 fn mount_embedded_assets() {
     use include_dir::{include_dir, Dir};
     static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets");
+    // Stock blade-render/code + assets/shaders overlays (see build.rs).
+    static MERGED_SHADERS: Dir = include_dir!("$OUT_DIR/merged-shaders");
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
     fn walk(dir: &Dir, root: &std::path::Path) {
         for file in dir.files() {
@@ -101,7 +103,50 @@ fn mount_embedded_assets() {
         }
     }
     walk(&ASSETS, &root);
-    info!("Mounted embedded assets into VFS");
+    // Overlay/complete shaders at assets/shaders so Engine shader_path stays stable.
+    let shader_root = root.join("shaders");
+    for file in MERGED_SHADERS.files() {
+        blade_engine::vfs::mount(shader_root.join(file.path()), file.contents().to_vec());
+    }
+    info!("Mounted embedded assets + merged shaders into VFS");
+}
+
+/// Native: `blade_render::shader_dir()` stock WGSL, with any `assets/shaders/*.wgsl`
+/// overlays layered into `asset-cache/shaders` (Tokyo-3 `raster.wgsl` today).
+#[cfg(not(target_arch = "wasm32"))]
+fn native_shader_path(overlay_dir: &std::path::Path) -> String {
+    use std::fs;
+    let stock = blade_render::shader_dir();
+    let has_overlay = fs::read_dir(overlay_dir)
+        .ok()
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|x| x.to_str())
+                    == Some("wgsl")
+            })
+        })
+        .unwrap_or(false);
+    if !has_overlay {
+        return stock.to_string_lossy().into_owned();
+    }
+    let dest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("asset-cache/shaders");
+    fs::create_dir_all(&dest).expect("asset-cache/shaders");
+    for entry in fs::read_dir(&stock).expect("blade shader_dir") {
+        let entry = entry.expect("stock entry");
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("wgsl") {
+            continue;
+        }
+        let name = entry.file_name();
+        let overlay = overlay_dir.join(&name);
+        let src = if overlay.is_file() { overlay } else { path };
+        fs::copy(&src, dest.join(&name)).unwrap_or_else(|e| {
+            panic!("shader layer {} -> {}: {e}", src.display(), dest.display())
+        });
+    }
+    dest.to_string_lossy().into_owned()
 }
 
 fn initial_view_mode() -> render::ViewMode {
@@ -228,7 +273,17 @@ impl Game {
         let mut engine = blade_engine::Engine::new(
             blade_engine::Presentation::Window(&window),
             &blade_engine::config::Engine {
-                shader_path: assets.join("shaders").to_string_lossy().into_owned(),
+                shader_path: {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        native_shader_path(&assets.join("shaders"))
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        // Merged stock+overlay mounted here in mount_embedded_assets.
+                        assets.join("shaders").to_string_lossy().into_owned()
+                    }
+                },
                 data_path: assets.to_string_lossy().into_owned(),
                 cache_path: "asset-cache".to_string(),
                 time_step: 0.01,

@@ -261,7 +261,7 @@ dependencies = [
 [[package]]
 name = "blade-asset"
 version = "0.2.2"
-source = "git+https://github.com/kvark/blade?rev=07338d682aa403b8dd8e28e82b832d084139dd35#07338d682aa403b8dd8e28e82b832d084139dd35"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "base64 0.22.1",
  "bytemuck",
@@ -273,7 +273,7 @@ dependencies = [
 [[package]]
 name = "blade-egui"
 version = "0.9.0"
-source = "git+https://github.com/kvark/blade?rev=07338d682aa403b8dd8e28e82b832d084139dd35#07338d682aa403b8dd8e28e82b832d084139dd35"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "blade-graphics",
  "blade-macros",
@@ -286,7 +286,7 @@ dependencies = [
 [[package]]
 name = "blade-engine"
 version = "0.2.0"
-source = "git+https://github.com/kvark/blade?rev=07338d682aa403b8dd8e28e82b832d084139dd35#07338d682aa403b8dd8e28e82b832d084139dd35"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "base64 0.22.1",
  "blade-asset",
@@ -317,7 +317,7 @@ dependencies = [
 [[package]]
 name = "blade-graphics"
 version = "0.9.0"
-source = "git+https://github.com/kvark/blade?rev=07338d682aa403b8dd8e28e82b832d084139dd35#07338d682aa403b8dd8e28e82b832d084139dd35"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "ash",
  "ash-window",
@@ -353,7 +353,7 @@ dependencies = [
 [[package]]
 name = "blade-helpers"
 version = "0.3.0"
-source = "git+https://github.com/kvark/blade?rev=07338d682aa403b8dd8e28e82b832d084139dd35#07338d682aa403b8dd8e28e82b832d084139dd35"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "blade-graphics",
  "blade-render",
@@ -367,7 +367,7 @@ dependencies = [
 [[package]]
 name = "blade-macros"
 version = "0.3.0"
-source = "git+https://github.com/kvark/blade?rev=07338d682aa403b8dd8e28e82b832d084139dd35#07338d682aa403b8dd8e28e82b832d084139dd35"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -377,7 +377,7 @@ dependencies = [
 [[package]]
 name = "blade-particle"
 version = "0.2.0"
-source = "git+https://github.com/kvark/blade?rev=07338d682aa403b8dd8e28e82b832d084139dd35#07338d682aa403b8dd8e28e82b832d084139dd35"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "blade-graphics",
  "blade-macros",
@@ -389,7 +389,7 @@ dependencies = [
 [[package]]
 name = "blade-render"
 version = "0.6.0"
-source = "git+https://github.com/kvark/blade?rev=07338d682aa403b8dd8e28e82b832d084139dd35#07338d682aa403b8dd8e28e82b832d084139dd35"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "base64 0.22.1",
  "bevy_mikktspace",
@@ -419,7 +419,7 @@ dependencies = [
 [[package]]
 name = "blade-util"
 version = "0.5.0"
-source = "git+https://github.com/kvark/blade?rev=07338d682aa403b8dd8e28e82b832d084139dd35#07338d682aa403b8dd8e28e82b832d084139dd35"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "blade-graphics",
  "bytemuck",

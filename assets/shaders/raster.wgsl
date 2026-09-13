@@ -405,8 +405,8 @@ fn raster_sky_fs(input: SkyOutput) -> @location(0) vec4<f32> {
             }
         } else {
             // Tokyo-3 twilight (pre-Reinhard): hot sodium horizon band, purple
-            // haze shelf, deep indigo zenith. Geofront-local mood; re-apply
-            // after scripts/fetch-shaders.sh if Blade tip resets the gradient.
+            // haze shelf, deep indigo zenith. Geofront-local overlay on Blade
+            // stock raster.wgsl — re-diff when bumping the blade-render pin.
             let t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
             let sun_band = exp(-pow((dir.y + 0.04) / 0.14, 2.0));
             let horizon = vec3<f32>(2.8, 0.62, 0.12);
