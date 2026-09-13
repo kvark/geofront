@@ -321,6 +321,34 @@ impl Mech {
         true
     }
 
+    /// Max AT Field charges for this archetype (player 1, Mass 2, else 0).
+    pub fn at_field_max(&self) -> u8 {
+        match self.alien {
+            Some(AlienKind::Mass) => 2,
+            Some(AlienKind::Splinter) => 0,
+            None if self.team == Team::Player => 1,
+            None => 0,
+        }
+    }
+
+    /// Glanceable AT Field state for HUD / playtest readability.
+    pub fn at_field_hud_state(&self) -> Option<AtFieldHudState> {
+        let max = self.at_field_max();
+        if max == 0 {
+            return None;
+        }
+        if self.at_field > 0 {
+            Some(AtFieldHudState::Ready {
+                charges: self.at_field,
+                max,
+            })
+        } else {
+            Some(AtFieldHudState::Shattered {
+                recharges_on_end_turn: self.team == Team::Player,
+            })
+        }
+    }
+
     pub fn mobility(&self) -> f32 {
         let legs: f32 = self
             .limbs
@@ -386,6 +414,44 @@ impl Mech {
             Some(AlienKind::Splinter) => LimbKind::LeftArm,
             Some(AlienKind::Mass) => LimbKind::Torso,
             None => LimbKind::Torso,
+        }
+    }
+}
+
+/// AT Field presentation state for battle HUD (ready / shattered / recharging).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtFieldHudState {
+    /// Charges remaining — cyan cage up.
+    Ready { charges: u8, max: u8 },
+    /// Last charge spent. Player recharges on End Turn; Mass does not.
+    Shattered { recharges_on_end_turn: bool },
+}
+
+impl AtFieldHudState {
+    /// Compact list-row mark (`AT●`, `AT●●`, `AT○`).
+    pub fn list_mark(&self) -> String {
+        match *self {
+            Self::Ready { charges, .. } => {
+                let pips: String = (0..charges).map(|_| '●').collect();
+                format!("  AT{pips}")
+            }
+            Self::Shattered { .. } => "  AT○".into(),
+        }
+    }
+
+    /// Selected-unit detail line (absorb vs shatter must read at a glance).
+    pub fn detail_line(&self) -> String {
+        match *self {
+            Self::Ready { charges, max } => {
+                let noun = if charges == 1 { "charge" } else { "charges" };
+                format!("AT Field ready — {charges}/{max} {noun}")
+            }
+            Self::Shattered {
+                recharges_on_end_turn: true,
+            } => "AT Field shattered — recharges on End Turn".into(),
+            Self::Shattered {
+                recharges_on_end_turn: false,
+            } => "AT Field cage shattered".into(),
         }
     }
 }
@@ -462,6 +528,11 @@ impl Pilot {
         } else {
             SyncBand::Mid
         }
+    }
+
+    /// Integer sync % for HUD badges (0–100).
+    pub fn sync_percent(&self) -> u8 {
+        (self.sync * 100.0).round().clamp(0.0, 100.0) as u8
     }
 
     /// Attack damage multiplier from pilot–mech sync.
@@ -578,5 +649,62 @@ mod tests {
         let at_full = p.core_strike_mult();
         assert!(at_full > at_high, "full={at_full} high={at_high}");
         assert!((at_full - 1.25).abs() < 1e-5, "at_full={at_full}");
+    }
+
+    #[test]
+    fn at_field_hud_ready_and_shattered() {
+        let mut coil = Mech::new_player(0, "Coil", IVec2::new(0, 0));
+        assert_eq!(coil.at_field_max(), 1);
+        let ready = coil.at_field_hud_state().unwrap();
+        assert_eq!(ready, AtFieldHudState::Ready { charges: 1, max: 1 });
+        assert_eq!(ready.list_mark(), "  AT●");
+        assert!(ready.detail_line().contains("ready"));
+        assert!(ready.detail_line().contains("1/1"));
+
+        coil.at_field = 0;
+        let sh = coil.at_field_hud_state().unwrap();
+        assert_eq!(
+            sh,
+            AtFieldHudState::Shattered {
+                recharges_on_end_turn: true
+            }
+        );
+        assert_eq!(sh.list_mark(), "  AT○");
+        assert!(sh.detail_line().contains("shattered"));
+        assert!(sh.detail_line().contains("End Turn"));
+
+        let mass = Mech::new_alien(11, AlienKind::Mass, IVec2::new(4, 4));
+        assert_eq!(mass.at_field_max(), 2);
+        let mready = mass.at_field_hud_state().unwrap();
+        assert_eq!(mready, AtFieldHudState::Ready { charges: 2, max: 2 });
+        assert_eq!(mready.list_mark(), "  AT●●");
+        assert!(mready.detail_line().contains("2/2"));
+
+        let mut mass2 = mass;
+        mass2.at_field = 0;
+        let msh = mass2.at_field_hud_state().unwrap();
+        assert_eq!(
+            msh,
+            AtFieldHudState::Shattered {
+                recharges_on_end_turn: false
+            }
+        );
+        assert!(msh.detail_line().contains("cage shattered"));
+        assert!(!msh.detail_line().contains("End Turn"));
+
+        let splinter = Mech::new_alien(10, AlienKind::Splinter, IVec2::new(1, 1));
+        assert_eq!(splinter.at_field_max(), 0);
+        assert!(splinter.at_field_hud_state().is_none());
+    }
+
+    #[test]
+    fn sync_percent_badge_rounds() {
+        let mut p = Pilot::new(0, "Nori");
+        p.sync = 0.85;
+        assert_eq!(p.sync_percent(), 85);
+        p.sync = 0.704;
+        assert_eq!(p.sync_percent(), 70);
+        p.sync = 1.0;
+        assert_eq!(p.sync_percent(), 100);
     }
 }
