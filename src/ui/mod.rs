@@ -1,6 +1,6 @@
 //! egui screens: battle HUD, city overview controls, mode switching.
 
-use crate::characters::PilotDramaKind;
+use crate::characters::{PilotDramaKind, portrait_initials, portrait_rgb};
 use crate::combat::{Mission, TurnPhase};
 use crate::render::ViewMode;
 use crate::units::{Facing, LimbKind, SyncBand, Team};
@@ -104,9 +104,31 @@ fn battle_panel(
             PilotDramaKind::StressSpike => egui::Color32::from_rgb(255, 170, 70),
             PilotDramaKind::Refuse => egui::Color32::from_rgb(255, 90, 90),
             PilotDramaKind::Steady => egui::Color32::from_rgb(140, 220, 160),
+            PilotDramaKind::CoreSight => egui::Color32::from_rgb(200, 170, 255),
         };
-        ui.colored_label(color, flash.caption());
-        ui.small(&flash.line);
+        ui.horizontal(|ui| {
+            let stressed = matches!(
+                flash.kind,
+                PilotDramaKind::StressSpike | PilotDramaKind::Refuse
+            );
+            paint_pilot_portrait(
+                ui,
+                flash.pilot_id,
+                &flash.pilot_name,
+                44.0,
+                stressed,
+                matches!(flash.kind, PilotDramaKind::CoreSight),
+            );
+            ui.vertical(|ui| {
+                ui.colored_label(color, flash.caption());
+                ui.label(
+                    egui::RichText::new(format!(r#"{}: "{}""#, flash.pilot_name, flash.dialog))
+                        .strong()
+                        .color(color),
+                );
+                ui.small(&flash.line);
+            });
+        });
     }
 
     ui.separator();
@@ -175,25 +197,40 @@ fn battle_panel(
                 if let Some(pid) = m.pilot_id {
                     if let Some(p) = mission.pilot(pid) {
                         cols[0].horizontal(|ui| {
-                            ui.label(format!("Pilot {}", p.name));
-                            let sync_color = match p.sync_band() {
-                                SyncBand::High => egui::Color32::from_rgb(100, 220, 255),
-                                SyncBand::Low => egui::Color32::from_rgb(255, 140, 70),
-                                SyncBand::Mid => egui::Color32::LIGHT_GREEN,
-                            };
-                            ui.colored_label(sync_color, format!("sync {:.0}%", p.sync * 100.0));
-                            ui.label(format!("loyalty {:.0}%", p.loyalty * 100.0));
-                            let stress_color = if p.stress >= 0.6 {
-                                egui::Color32::from_rgb(255, 90, 90)
-                            } else if p.stress >= 0.3 {
-                                egui::Color32::YELLOW
-                            } else {
-                                egui::Color32::LIGHT_GREEN
-                            };
-                            ui.colored_label(
-                                stress_color,
-                                format!("stress {:.0}%", p.stress * 100.0),
+                            paint_pilot_portrait(
+                                ui,
+                                p.id,
+                                &p.name,
+                                36.0,
+                                p.pending_refuse || p.stress >= 0.6,
+                                p.can_see_core(),
                             );
+                            ui.vertical(|ui| {
+                                ui.label(format!("Pilot {}", p.name));
+                                ui.horizontal(|ui| {
+                                    let sync_color = match p.sync_band() {
+                                        SyncBand::High => egui::Color32::from_rgb(100, 220, 255),
+                                        SyncBand::Low => egui::Color32::from_rgb(255, 140, 70),
+                                        SyncBand::Mid => egui::Color32::LIGHT_GREEN,
+                                    };
+                                    ui.colored_label(
+                                        sync_color,
+                                        format!("sync {:.0}%", p.sync * 100.0),
+                                    );
+                                    ui.label(format!("loyalty {:.0}%", p.loyalty * 100.0));
+                                    let stress_color = if p.stress >= 0.6 {
+                                        egui::Color32::from_rgb(255, 90, 90)
+                                    } else if p.stress >= 0.3 {
+                                        egui::Color32::YELLOW
+                                    } else {
+                                        egui::Color32::LIGHT_GREEN
+                                    };
+                                    ui.colored_label(
+                                        stress_color,
+                                        format!("stress {:.0}%", p.stress * 100.0),
+                                    );
+                                });
+                            });
                         });
                         if p.pending_refuse {
                             cols[0].colored_label(
@@ -416,6 +453,64 @@ fn battle_panel(
         });
 
     requested
+}
+
+/// Procedural pilot plaque: tinted silhouette + initials (no art packs).
+fn paint_pilot_portrait(
+    ui: &mut egui::Ui,
+    pilot_id: u32,
+    name: &str,
+    size: f32,
+    stressed: bool,
+    high_sync: bool,
+) {
+    let (rect, _resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let rgb = portrait_rgb(pilot_id);
+    let mut fill = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+    if stressed {
+        fill = egui::Color32::from_rgb(
+            ((rgb[0] as u16 * 2 + 255) / 3) as u8,
+            (rgb[1] as u16 * 2 / 3) as u8,
+            (rgb[2] as u16 * 2 / 3) as u8,
+        );
+    }
+    let stroke = if high_sync {
+        egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(180, 230, 255))
+    } else if stressed {
+        egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(255, 120, 80))
+    } else {
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(30, 30, 40))
+    };
+    painter.rect(
+        rect,
+        5.0,
+        fill,
+        stroke,
+        egui::StrokeKind::Inside,
+    );
+    // Head + shoulders silhouette.
+    let c = rect.center();
+    let head_r = size * 0.18;
+    let head = egui::pos2(c.x, rect.top() + size * 0.32);
+    painter.circle_filled(head, head_r, egui::Color32::from_rgba_unmultiplied(20, 22, 28, 200));
+    let shoulder = egui::Rect::from_center_size(
+        egui::pos2(c.x, rect.top() + size * 0.72),
+        egui::vec2(size * 0.62, size * 0.38),
+    );
+    painter.rect_filled(
+        shoulder,
+        size * 0.2,
+        egui::Color32::from_rgba_unmultiplied(20, 22, 28, 200),
+    );
+    let initials = portrait_initials(name);
+    painter.text(
+        c,
+        egui::Align2::CENTER_CENTER,
+        initials,
+        egui::FontId::proportional((size * 0.38).clamp(11.0, 18.0)),
+        egui::Color32::WHITE,
+    );
 }
 
 fn city_panel(ui: &mut egui::Ui, mode: ViewMode) {

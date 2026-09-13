@@ -628,8 +628,9 @@ impl Mission {
     }
 
     /// If any living player is high-sync, flash living Angel cores + log.
+    /// First pattern sight also fires a sparse CoreSight dialog / portrait flash.
     pub fn maybe_core_telegraph(&mut self) {
-        let Some((_viewer_id, pilot_name, sync)) = self.first_high_sync_viewer() else {
+        let Some((viewer_id, pilot_name, sync)) = self.first_high_sync_viewer() else {
             return;
         };
         let angels = self.living_angels();
@@ -639,10 +640,43 @@ impl Mission {
         let names: Vec<&str> = angels.iter().map(|(_, n)| n.as_str()).collect();
         let list = names.join(", ");
         let cores = if angels.len() == 1 { "core" } else { "cores" };
+        let first_sight = !self.log.iter().any(|l| l.contains("sees the pattern"));
         let sync_pct = (sync * 100.0).round();
-        let line = format!(
-            "{pilot_name} sees the pattern (sync {sync_pct:.0}%) — {list} {cores} flash."
-        );
+        let detail = format!("{list} {cores} flash");
+        let line = if first_sight {
+            if let Some(pid) = self.mech(viewer_id).and_then(|m| m.pilot_id) {
+                if let Some(pilot) = self.pilot(pid) {
+                    let line = drama_line(
+                        PilotDramaKind::CoreSight,
+                        pilot,
+                        "",
+                        &detail,
+                    );
+                    self.pilot_flash = Some(PilotHudFlash::new(
+                        PilotDramaKind::CoreSight,
+                        pilot,
+                        line.clone(),
+                    ));
+                    self.pending_fx.push(CombatFx::PilotDrama {
+                        unit_id: viewer_id,
+                        kind: PilotDramaKind::CoreSight,
+                    });
+                    line
+                } else {
+                    format!(
+                        "{pilot_name} sees the pattern (sync {sync_pct:.0}%) — {detail}."
+                    )
+                }
+            } else {
+                format!(
+                    "{pilot_name} sees the pattern (sync {sync_pct:.0}%) — {detail}."
+                )
+            }
+        } else {
+            format!(
+                "{pilot_name} sees the pattern (sync {sync_pct:.0}%) — {detail}."
+            )
+        };
         for (id, _) in &angels {
             self.pending_fx.push(CombatFx::CoreFlash { target_id: *id });
         }
@@ -1803,6 +1837,8 @@ mod tests {
         let flash = m.pilot_flash.as_ref().expect("flash");
         assert_eq!(flash.caption(), "⛔ ORDER REFUSED");
         assert!(flash.line.contains("refuses the attack"));
+        assert!(!flash.dialog.is_empty());
+        assert_eq!(flash.pilot_id, 0);
     }
 
     #[test]
@@ -1881,6 +1917,39 @@ mod tests {
             m.log
         );
     }
+
+    #[test]
+    fn first_core_telegraph_sets_portrait_dialog_flash() {
+        let mut m = Mission::new_skirmish();
+        m.pilot_mut(0).unwrap().sync = 0.95;
+        m.maybe_core_telegraph();
+        let flash = m.pilot_flash.as_ref().expect("CoreSight flash");
+        assert_eq!(flash.kind, PilotDramaKind::CoreSight);
+        assert_eq!(flash.pilot_id, 0);
+        assert!(!flash.dialog.is_empty(), "dialog beat");
+        assert!(flash.line.contains("sees the pattern"));
+        assert!(
+            m.pending_fx.iter().any(|fx| matches!(
+                fx,
+                CombatFx::PilotDrama {
+                    kind: PilotDramaKind::CoreSight,
+                    ..
+                }
+            )),
+            "PilotDrama CoreSight fx; fx={:?}",
+            m.pending_fx
+        );
+        // Sparse: second telegraph must not replace with another CoreSight spam flash
+        // (stress/refuse can overwrite later; here we only re-call telegraph).
+        m.pilot_flash = None;
+        m.maybe_core_telegraph();
+        assert!(
+            m.pilot_flash.is_none(),
+            "repeat telegraph stays sparse; flash={:?}",
+            m.pilot_flash
+        );
+    }
+
 
     #[test]
     fn low_sync_does_not_see_cores() {
