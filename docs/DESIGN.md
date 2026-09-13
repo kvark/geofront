@@ -30,7 +30,7 @@ Canonical pitch notes: [`eva.md`](https://github.com/kvark/ideas/blob/master/gam
 | City | Dense / tall skyscraper canyon framing the 8×8; lit windows at night |
 | Street | Dark asphalt so lights + sky pop; warm sodium pools + cool neon accents |
 | Mechs | Heroic readability: team tints, cool rim / fresnel, impact flash — not grain silhouettes |
-| Angels | Distinct magenta/crimson strike language + debug-line presence; AT Field cyan cage (Mass + player) |
+| Angels | Distinct magenta/crimson strike language + debug-line presence; AT Field cyan cage / shatter remnant + charge pips (Mass + player) |
 | Camera | Low ¾ anime combat framing; surface overview as canyon establishing shot |
 | Atmosphere | Soft depth haze toward dusk; contact shadows without blacking skinned mechs |
 
@@ -62,5 +62,5 @@ When judging a build under lavapipe:
 1. Does the mid-battle shot read as **dusk canyon** (warm key, cool fill, sky glow)?
 2. Do **sodium / neon** pools and window glitter sell night city?
 3. Are player mechs **readable heroes**, not grain silhouettes?
-4. Do Angels read vs mechs (silhouette/FX, AT Field cyan cage on Mass + players, high-sync core flash / crack) without new meshes?
+4. Do Angels read vs mechs (silhouette/FX, AT Field cyan cage / shatter remnant + charge pips on Mass + players, glanceable sync % / bar, high-sync core flash / crack) without new meshes?
 5. Does `GEOFRONT_AUTOPLAY=1` still reach **VICTORY**?

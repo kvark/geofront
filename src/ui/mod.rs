@@ -3,7 +3,7 @@
 use crate::characters::{PilotDramaKind, portrait_initials, portrait_rgb};
 use crate::combat::{Mission, TurnPhase};
 use crate::render::ViewMode;
-use crate::units::{Facing, LimbKind, SyncBand, Team};
+use crate::units::{AtFieldHudState, Facing, LimbKind, SyncBand, Team};
 
 /// Draws the side-panel HUD and returns any action the player requested.
 pub fn side_hud(
@@ -141,22 +141,22 @@ fn battle_panel(
             let pilot = m.pilot_id.and_then(|id| mission.pilot(id));
             let stressed = pilot.map(|p| p.pending_refuse).unwrap_or(false);
             let sync_mark = pilot
-                .map(|p| match p.sync_band() {
-                    SyncBand::High => " ⚡",
-                    SyncBand::Low => " ↓",
-                    SyncBand::Mid => "",
+                .map(|p| {
+                    let badge = format!("  sync{}%", p.sync_percent());
+                    match p.sync_band() {
+                        SyncBand::High => format!("{badge}⚡"),
+                        SyncBand::Low => format!("{badge}↓"),
+                        SyncBand::Mid => badge,
+                    }
                 })
-                .unwrap_or("");
-            let at_mark = if m.at_field > 0 {
-                format!("  AT×{}", m.at_field)
-            } else {
-                String::new()
-            };
+                .unwrap_or_default();
+            let at_state = m.at_field_hud_state();
+            let at_mark = at_state.map(|s| s.list_mark()).unwrap_or_default();
             let label = if m.destroyed {
                 format!("{} (destroyed)", m.name)
             } else if stressed {
                 format!(
-                    "{} {}  ({},{})  {:.0}/{:.0}  MP{}{}  ⚠",
+                    "{} {}  ({},{})  {:.0}/{:.0}  MP{}{}{}  ⚠",
                     m.name,
                     m.facing.label(),
                     m.position.x,
@@ -164,7 +164,8 @@ fn battle_panel(
                     hp,
                     max,
                     m.move_left,
-                    at_mark
+                    at_mark,
+                    sync_mark
                 )
             } else {
                 format!(
@@ -184,15 +185,12 @@ fn battle_panel(
                 *selected_player = m.id;
             }
             if selected && !m.destroyed {
-                if m.at_field > 0 {
-                    cols[0].colored_label(
-                        egui::Color32::from_rgb(100, 210, 255),
-                        format!(
-                            "AT Field active ({} absorb{})",
-                            m.at_field,
-                            if m.at_field == 1 { "" } else { "s" }
-                        ),
-                    );
+                if let Some(state) = at_state {
+                    let color = match state {
+                        AtFieldHudState::Ready { .. } => egui::Color32::from_rgb(100, 210, 255),
+                        AtFieldHudState::Shattered { .. } => egui::Color32::from_rgb(160, 170, 190),
+                    };
+                    cols[0].colored_label(color, state.detail_line());
                 }
                 if let Some(pid) = m.pilot_id {
                     if let Some(p) = mission.pilot(pid) {
@@ -207,16 +205,8 @@ fn battle_panel(
                             );
                             ui.vertical(|ui| {
                                 ui.label(format!("Pilot {}", p.name));
+                                paint_sync_bar(ui, p.sync, p.sync_band());
                                 ui.horizontal(|ui| {
-                                    let sync_color = match p.sync_band() {
-                                        SyncBand::High => egui::Color32::from_rgb(100, 220, 255),
-                                        SyncBand::Low => egui::Color32::from_rgb(255, 140, 70),
-                                        SyncBand::Mid => egui::Color32::LIGHT_GREEN,
-                                    };
-                                    ui.colored_label(
-                                        sync_color,
-                                        format!("sync {:.0}%", p.sync * 100.0),
-                                    );
                                     ui.label(format!("loyalty {:.0}%", p.loyalty * 100.0));
                                     let stress_color = if p.stress >= 0.6 {
                                         egui::Color32::from_rgb(255, 90, 90)
@@ -289,42 +279,33 @@ fn battle_panel(
         for m in mission.mechs.iter().filter(|m| m.team == Team::Enemy) {
             let selected = *selected_enemy == m.id;
             let (hp, max) = m.total_hp();
+            let at_state = m.at_field_hud_state();
+            let at_mark = at_state.map(|s| s.list_mark()).unwrap_or_default();
             let label = if m.destroyed {
                 format!("{} (destroyed)", m.name)
-            } else if m.at_field > 0 {
+            } else {
                 format!(
-                    "{} {}  ({},{})  {:.0}/{:.0}  AT×{}",
+                    "{} {}  ({},{})  {:.0}/{:.0}{}",
                     m.name,
                     m.facing.label(),
                     m.position.x,
                     m.position.y,
                     hp,
                     max,
-                    m.at_field
-                )
-            } else {
-                format!(
-                    "{} {}  ({},{})  {:.0}/{:.0}",
-                    m.name,
-                    m.facing.label(),
-                    m.position.x,
-                    m.position.y,
-                    hp,
-                    max
+                    at_mark
                 )
             };
             if cols[1].selectable_label(selected, label).clicked() && !m.destroyed {
                 *selected_enemy = m.id;
             }
-            if selected && !m.destroyed && m.at_field > 0 {
-                cols[1].colored_label(
-                    egui::Color32::from_rgb(100, 210, 255),
-                    format!(
-                        "AT Field active ({} absorb{})",
-                        m.at_field,
-                        if m.at_field == 1 { "" } else { "s" }
-                    ),
-                );
+            if selected && !m.destroyed {
+                if let Some(state) = at_state {
+                    let color = match state {
+                        AtFieldHudState::Ready { .. } => egui::Color32::from_rgb(100, 210, 255),
+                        AtFieldHudState::Shattered { .. } => egui::Color32::from_rgb(180, 140, 160),
+                    };
+                    cols[1].colored_label(color, state.detail_line());
+                }
             }
             if selected && !m.destroyed && m.alien.is_some() {
                 let sees = mission
@@ -429,11 +410,15 @@ fn battle_panel(
         .show(ui, |ui| {
             for line in mission.log.iter().rev().take(40).rev() {
                 let at_recharge = line.contains("AT Field recharges");
+                let at_shatter = line.contains("SHATTERS") || line.contains("AT Field shattered");
+                let at_absorb = line.contains("AT Field absorbs");
                 let drama = line.contains("may refuse next order")
                     || line.contains("refuses the")
                     || line.contains("steadies")
                     || line.contains("sees the pattern");
-                if at_recharge {
+                if at_shatter {
+                    ui.colored_label(egui::Color32::from_rgb(180, 220, 255), line);
+                } else if at_recharge || at_absorb {
                     ui.colored_label(egui::Color32::from_rgb(100, 210, 255), line);
                 } else if drama {
                     let color = if line.contains("refuses the") {
@@ -455,8 +440,37 @@ fn battle_panel(
     requested
 }
 
+/// Glanceable sync ratio bar + % badge (color ramp matches SyncBand thresholds).
+fn paint_sync_bar(ui: &mut egui::Ui, sync: f32, band: SyncBand) {
+    let fill = match band {
+        SyncBand::High => egui::Color32::from_rgb(100, 220, 255),
+        SyncBand::Low => egui::Color32::from_rgb(255, 140, 70),
+        SyncBand::Mid => egui::Color32::from_rgb(140, 210, 150),
+    };
+    let pct = (sync * 100.0).round().clamp(0.0, 100.0) as u8;
+    ui.horizontal(|ui| {
+        ui.colored_label(fill, format!("sync {pct}%"));
+        let desired = egui::vec2(88.0, 10.0);
+        let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(28, 32, 40));
+        let mut filled = rect;
+        filled.set_width(rect.width() * sync.clamp(0.0, 1.0));
+        painter.rect_filled(filled, 2.0, fill);
+        // Threshold ticks at low (45%) and high (85%).
+        for t in [0.45_f32, 0.85] {
+            let x = rect.left() + rect.width() * t;
+            painter.line_segment(
+                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 90)),
+            );
+        }
+    });
+}
+
 /// Procedural pilot plaque: tinted silhouette + initials (no art packs).
 fn paint_pilot_portrait(
+
     ui: &mut egui::Ui,
     pilot_id: u32,
     name: &str,

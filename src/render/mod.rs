@@ -243,6 +243,8 @@ struct ImpactFlash {
     dir: Vec3,
     /// Cool cyan AT Field deflect (vs warm sodium / Angel hit).
     at_field: bool,
+    /// Last-charge shatter burst (vs soft absorb deflect).
+    shattered: bool,
     /// `Some` = Angel strike palette; `None` = mech sodium (ignored when at_field).
     kind: Option<AlienKind>,
 }
@@ -257,6 +259,8 @@ pub struct Arena {
     punch_t: f32,
     /// Brief AT Field ring flare (unit_id → seconds remaining).
     at_field_pulse: HashMap<u32, f32>,
+    /// Shatter remnant cage (drawn even after charges hit 0).
+    at_field_break: HashMap<u32, f32>,
     /// High-sync core / weak-point flash (unit_id → seconds remaining).
     core_pulse: HashMap<u32, f32>,
     /// Persistent local-light handles (Blade tip uses handle-based LocalLight).
@@ -295,6 +299,7 @@ impl Arena {
             impact_flashes: Vec::new(),
             punch_t: 0.0,
             at_field_pulse: HashMap::new(),
+            at_field_break: HashMap::new(),
             core_pulse: HashMap::new(),
             light_handles: Vec::new(),
         }
@@ -309,6 +314,7 @@ impl Arena {
         self.impact_flashes.clear();
         self.punch_t = 0.0;
         self.at_field_pulse.clear();
+        self.at_field_break.clear();
         self.core_pulse.clear();
         for h in self.stage_handles.drain(..) {
             engine.remove_object(h);
@@ -414,32 +420,41 @@ impl Arena {
             duration: IMPACT_FLASH_SECS,
             dir,
             at_field: false,
+            shattered: false,
             kind,
         });
         self.punch_t = self.punch_t.max(IMPACT_PUNCH_SECS);
     }
 
     /// Cyan AT Field deflect flash + ring pulse (no camera punch).
+    /// Shatter is longer/brighter and leaves a broken-cage remnant so absorb vs break reads.
     pub fn spawn_at_field_fx(&mut self, target_id: u32, shattered: bool) {
         let pos = self
             .visuals
             .get(&target_id)
             .map(|v| v.pos + Vec3::Y * 1.45)
             .unwrap_or(Vec3::Y * 1.45);
-        let dur = if shattered { 0.55 } else { 0.38 };
+        let dur = if shattered { 0.72 } else { 0.38 };
         self.impact_flashes.push(ImpactFlash {
             pos,
             t: dur,
             duration: dur,
             dir: Vec3::Y,
             at_field: true,
+            shattered,
             kind: None,
         });
-        let pulse = if shattered { 0.7 } else { 0.45 };
+        let pulse = if shattered { 0.85 } else { 0.45 };
         self.at_field_pulse
             .entry(target_id)
             .and_modify(|t| *t = (*t).max(pulse))
             .or_insert(pulse);
+        if shattered {
+            self.at_field_break
+                .entry(target_id)
+                .and_modify(|t| *t = (*t).max(0.85))
+                .or_insert(0.85);
+        }
     }
 
     /// Brief weak-point flash on an Angel (high-sync pattern sight).
@@ -461,6 +476,7 @@ impl Arena {
             duration: CORE_FLASH_SECS,
             dir: Vec3::Y,
             at_field: false,
+            shattered: false,
             kind,
         });
     }
@@ -484,6 +500,7 @@ impl Arena {
             duration: CORE_CRACK_SECS,
             dir: Vec3::Y,
             at_field: false,
+            shattered: false,
             kind,
         });
         // Extra camera kick — crack should feel sharper than a telegraph flash.
@@ -711,6 +728,10 @@ impl Arena {
             *t = (*t - dt).max(0.0);
         }
         self.at_field_pulse.retain(|_, t| *t > 0.0);
+        for t in self.at_field_break.values_mut() {
+            *t = (*t - dt).max(0.0);
+        }
+        self.at_field_break.retain(|_, t| *t > 0.0);
         for t in self.core_pulse.values_mut() {
             *t = (*t - dt).max(0.0);
         }
@@ -817,16 +838,28 @@ impl Arena {
                 1.0
             };
             let mut tint = mech_tint(mech, pulse);
-            if mech.at_field > 0 && !mech.destroyed {
-                // Cool cyan veil while AT Field is up.
+            if !mech.destroyed {
                 let flare = self
                     .at_field_pulse
                     .get(&mech.id)
-                    .map(|t| (*t / 0.7).clamp(0.0, 1.0))
+                    .map(|t| (*t / 0.85).clamp(0.0, 1.0))
                     .unwrap_or(0.0);
-                tint[0] = (tint[0] * 0.72 + 0.15 + 0.55 * flare).min(2.4);
-                tint[1] = (tint[1] * 0.85 + 0.45 + 0.85 * flare).min(3.0);
-                tint[2] = (tint[2] + 0.95 + 1.4 * flare).min(4.2);
+                let breaking = self
+                    .at_field_break
+                    .get(&mech.id)
+                    .map(|t| (*t / 0.85).clamp(0.0, 1.0))
+                    .unwrap_or(0.0);
+                if mech.at_field > 0 {
+                    // Cool cyan veil while AT Field is up.
+                    tint[0] = (tint[0] * 0.72 + 0.15 + 0.55 * flare).min(2.4);
+                    tint[1] = (tint[1] * 0.85 + 0.45 + 0.85 * flare).min(3.0);
+                    tint[2] = (tint[2] + 0.95 + 1.4 * flare).min(4.2);
+                } else if breaking > 0.0 {
+                    // White-cyan pop as the cage shatters (charges already spent).
+                    tint[0] = (tint[0] + 1.1 * breaking).min(3.2);
+                    tint[1] = (tint[1] + 1.6 * breaking).min(3.8);
+                    tint[2] = (tint[2] + 2.2 * breaking).min(4.5);
+                }
             }
             if vis.telegraph > 0.0 {
                 let build = 1.0 - (vis.telegraph / vis.telegraph_duration.max(0.01));
@@ -888,7 +921,7 @@ impl Arena {
         }
 
         draw_tactical_overlay(engine, mission, selected);
-        draw_at_field_rings(engine, mission, &self.visuals, &self.at_field_pulse);
+        draw_at_field_rings(engine, mission, &self.visuals, &self.at_field_pulse, &self.at_field_break);
         let see_cores = mission
             .mech(selected)
             .and_then(|m| m.pilot_id)
@@ -984,7 +1017,12 @@ fn draw_impact_sparks(engine: &mut blade_engine::Engine, flashes: &[ImpactFlash]
         }
         let pal = strike_palette(flash.kind);
         let (ray_color, tip_a, tip_b, rays) = if flash.at_field {
-            (0xFF_66_EE_FFu32, 0xFF_AA_FF_FFu32, 0xFF_33_99_FFu32, 14)
+            if flash.shattered {
+                // Bright white-cyan burst — unmistakable vs soft absorb.
+                (0xFF_EE_FF_FFu32, 0xFF_FF_FF_FFu32, 0xFF_55_CC_FFu32, 22)
+            } else {
+                (0xFF_66_EE_FFu32, 0xFF_AA_FF_FFu32, 0xFF_33_99_FFu32, 14)
+            }
         } else {
             (
                 pal.spark_ray,
@@ -1001,7 +1039,11 @@ fn draw_impact_sparks(engine: &mut blade_engine::Engine, flashes: &[ImpactFlash]
             let a = (i as f32) * std::f32::consts::TAU / rays as f32 + flash.t * 11.0;
             let lift = if i % 2 == 0 { 0.55 } else { 0.12 };
             let dir = Vec3::new(a.cos(), lift, a.sin());
-            let len = 0.35 + 1.15 * k;
+            let len = if flash.at_field && flash.shattered {
+                0.55 + 1.85 * k
+            } else {
+                0.35 + 1.15 * k
+            };
             lines.push(blade_render::DebugLine {
                 a: blade_render::DebugPoint {
                     pos: flash.pos.into(),
@@ -1035,16 +1077,18 @@ fn draw_impact_sparks(engine: &mut blade_engine::Engine, flashes: &[ImpactFlash]
     engine.add_debug_lines(&lines);
 }
 
-/// Octagon / hex-ish AT Field silhouette around charged units (player + Mass).
+/// Octagon AT Field cage around charged units; shatter remnant when breaking.
+/// Charge count thickens the cage (Mass 2 = double ring); shatter opens gaps + expands.
 fn draw_at_field_rings(
     engine: &mut blade_engine::Engine,
     mission: &Mission,
     visuals: &HashMap<u32, MechVisual>,
     pulses: &HashMap<u32, f32>,
+    breaks: &HashMap<u32, f32>,
 ) {
     let mut lines = Vec::new();
     for mech in &mission.mechs {
-        if mech.destroyed || mech.at_field == 0 {
+        if mech.destroyed {
             continue;
         }
         let Some(vis) = visuals.get(&mech.id) else {
@@ -1052,23 +1096,55 @@ fn draw_at_field_rings(
         };
         let flare = pulses
             .get(&mech.id)
-            .map(|t| (*t / 0.7).clamp(0.0, 1.0))
+            .map(|t| (*t / 0.85).clamp(0.0, 1.0))
             .unwrap_or(0.0);
-        let radius = 1.15 + 0.35 * flare + 0.08 * (mech.at_field as f32);
+        let breaking = breaks
+            .get(&mech.id)
+            .map(|t| (*t / 0.85).clamp(0.0, 1.0))
+            .unwrap_or(0.0);
+        let charged = mech.at_field > 0;
+        if !charged && breaking <= 0.0 {
+            continue;
+        }
+
+        let charges = mech.at_field.max(1);
+        let radius = if breaking > 0.0 {
+            1.2 + 0.95 * breaking
+        } else {
+            1.15 + 0.35 * flare + 0.06 * (charges as f32)
+        };
         let y0 = 0.35;
-        let y1 = 2.15 + 0.4 * flare;
-        let color = if flare > 0.15 {
+        let y1 = if breaking > 0.0 {
+            2.35 + 0.55 * breaking
+        } else {
+            2.15 + 0.4 * flare
+        };
+        let color = if breaking > 0.2 {
+            0xFF_DD_FF_FF // white-cyan shatter
+        } else if flare > 0.15 {
             0xFF_AA_FF_FF
         } else {
             0xFF_44_CC_EE
         };
         let sides = 8;
-        for ring_y in [y0, (y0 + y1) * 0.5, y1] {
+        // Intact cage: full rings. Shatter: skip every other edge (broken hex).
+        let ring_ys: Vec<f32> = if charged && mech.at_field >= 2 {
+            // Mass double-charge: denser cage reads as stronger field.
+            vec![y0, y0 + (y1 - y0) * 0.33, y0 + (y1 - y0) * 0.66, y1]
+        } else {
+            vec![y0, (y0 + y1) * 0.5, y1]
+        };
+        for ring_y in ring_ys {
             for i in 0..sides {
+                if breaking > 0.0 && i % 2 == 0 {
+                    continue; // gaps = shattered plates
+                }
                 let a0 = (i as f32) * std::f32::consts::TAU / sides as f32;
                 let a1 = ((i + 1) as f32) * std::f32::consts::TAU / sides as f32;
-                let p0 = vis.pos + Vec3::new(a0.cos() * radius, ring_y, a0.sin() * radius);
-                let p1 = vis.pos + Vec3::new(a1.cos() * radius, ring_y, a1.sin() * radius);
+                // Shatter flings plate edges outward slightly.
+                let kick = if breaking > 0.0 { 1.0 + 0.35 * breaking } else { 1.0 };
+                let p0 = vis.pos + Vec3::new(a0.cos() * radius * kick, ring_y, a0.sin() * radius * kick);
+                let p1 = vis.pos + Vec3::new(a1.cos() * radius * kick, ring_y, a1.sin() * radius * kick);
                 lines.push(blade_render::DebugLine {
                     a: blade_render::DebugPoint {
                         pos: p0.into(),
@@ -1086,19 +1162,47 @@ fn draw_at_field_rings(
             if i % 2 != 0 {
                 continue;
             }
+            if breaking > 0.0 && i % 4 == 0 {
+                continue;
+            }
             let a = (i as f32) * std::f32::consts::TAU / sides as f32;
-            let p0 = vis.pos + Vec3::new(a.cos() * radius, y0, a.sin() * radius);
-            let p1 = vis.pos + Vec3::new(a.cos() * radius, y1, a.sin() * radius);
+            let kick = if breaking > 0.0 { 1.0 + 0.25 * breaking } else { 1.0 };
+            let p0 = vis.pos + Vec3::new(a.cos() * radius * kick, y0, a.sin() * radius * kick);
+            let p1 = vis.pos + Vec3::new(a.cos() * radius * kick, y1, a.sin() * radius * kick);
             lines.push(blade_render::DebugLine {
                 a: blade_render::DebugPoint {
                     pos: p0.into(),
-                    color: 0xFF_33_AA_DD,
+                    color: if breaking > 0.0 {
+                        0xFF_88_CC_EE
+                    } else {
+                        0xFF_33_AA_DD
+                    },
                 },
                 b: blade_render::DebugPoint {
                     pos: p1.into(),
                     color,
                 },
             });
+        }
+        // Charge pips floating above the cage (1 or 2 cyan ticks).
+        if charged {
+            let pip_y = y1 + 0.22;
+            let pip_r = 0.22;
+            for c in 0..mech.at_field {
+                let ox = (c as f32 - (mech.at_field as f32 - 1.0) * 0.5) * 0.38;
+                let c0 = vis.pos + Vec3::new(ox - pip_r, pip_y, 0.0);
+                let c1 = vis.pos + Vec3::new(ox + pip_r, pip_y, 0.0);
+                lines.push(blade_render::DebugLine {
+                    a: blade_render::DebugPoint {
+                        pos: c0.into(),
+                        color: 0xFF_88_FF_FF,
+                    },
+                    b: blade_render::DebugPoint {
+                        pos: c1.into(),
+                        color: 0xFF_88_FF_FF,
+                    },
+                });
+            }
         }
     }
     if !lines.is_empty() {
