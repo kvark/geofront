@@ -16,18 +16,15 @@ Hybrid of XCOM-style base management and *Into the Breach*-style focused mech co
 - **Presentation** — Quaternius skinned GLBs play Idle / Walk / Punch / Hit / Death via `Engine::set_animation`. Attacks use a telegraph wind-up then strike (Splinter snappy, Mass heavy); hit reactions are deferred to impact; death locks and freezes so wrecks stay down. Tokyo-3 dusk mood: hot horizon glow + purple haze, denser/taller skyscraper canyon, dark asphalt, warm sodium + cyan/magenta neon street lights, procedural window glitter + cool rim in the raster path, depth fog, and a lower ¾ anime combat camera with impact punch. Mech strikes keep warm sodium kick; Angel strikes use distinct magenta (Splinter) / crimson (Mass) impact lights + sparks, per-kind telegraph glow, and debug-line silhouettes (tall spines vs bulk cage) so they read as Angels vs mechs without new meshes. High-sync pilots get a brief core star on those silhouettes (pattern sight); landing a strike cracks the core harder. AT Field deflects use cyan cage FX. Directional contact shadows on (Blade skinned-receiver bias).
 - **City** — Kenney surface block + Space Kit underground hangar (pieces abut on edges, no stacked floors).
 - **HUD** — view switcher, N/W/E/S step, rotate, attack, wait, end turn (Blade + egui). Web also has an HTML view strip so Pages stays playable if the in-canvas panel fails to composite.
-- **Dual target** — native + WASM (assets embedded via `include_dir` + Blade VFS; WASM uses Blade's WebGL2 backend). Pinned to Blade `07338d6` (skinned shadow receivers) (#380 texelFetch present so the canvas is not a decoded-sRGB dark frame; #381 shadow FS + wasm32 GLES profile; #378/#379 buffer-class and canvas color-space).
+- **Dual target** — native + WASM (models embedded via `include_dir` + Blade VFS; WGSL from `blade_render::shader_dir()` with a Tokyo-3 `raster.wgsl` overlay; WASM uses Blade's WebGL2 backend). Pinned to Blade `33e2a5b` (`shader_dir()`, post-#391; still carries skinned shadow receivers / #380–#381 GLES fixes).
 
 North star: [docs/DESIGN.md](docs/DESIGN.md). Original pitch notes: https://github.com/kvark/ideas/blob/master/game/eva.md
 
 ## Setup
 
-Shaders (required for the windowed build):
-
-```bash
-./scripts/fetch-shaders.sh
-# or: cp -r ../redline/assets/shaders ./assets/shaders
-```
+No shader fetch step. Native loads stock WGSL from `blade_render::shader_dir()`
+and layers any files under `assets/shaders/` (currently Tokyo-3 `raster.wgsl`)
+into `asset-cache/shaders/`. See [assets/README.md](assets/README.md).
 
 ## Run (native)
 
@@ -98,6 +95,7 @@ Open `?view=battle`, `?view=surface`, or `?view=underground` to pick the startin
 
 - Kenney city kits (CC0) under `assets/models/{roads,commercial,industrial,space}`
 - Quaternius Animated Mech Pack (CC0) under `assets/models/mechs/` (Stan, Mike, George, Leela GLBs + external albedo PNGs; metalness 0, mild shadow-lift for lavapipe raster)
+- Render shaders via `blade_render::shader_dir()`; Tokyo-3 overlay only at `assets/shaders/raster.wgsl`
 
 ## Core pillars
 
