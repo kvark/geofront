@@ -565,14 +565,14 @@ impl Arena {
                 // flood was bleaching nearby walls and pale armor plates.
                 let sodium = [1.0, 0.42, 0.08];
                 let battle = self.kind == ViewMode::Battle;
-                let sodium_i = if battle { 300.0 } else { 980.0 } * (1.0 + 2.8 * kick);
-                let sodium_r = if battle { 9.5 } else { 18.0 } + (if battle { 3.0 } else { 5.0 }) * kick;
+                let sodium_i = if battle { 420.0 } else { 980.0 } * (1.0 + 2.8 * kick);
+                let sodium_r = if battle { 10.5 } else { 18.0 } + (if battle { 3.0 } else { 5.0 }) * kick;
                 for &(x, z) in &SODIUM_CELLS {
                     let p = cell_to_world(IVec2::new(x, z));
                     push(&mut lights, [p.x, 1.95, p.z], sodium, sodium_i, sodium_r);
                 }
-                let neon_i = if battle { 160.0 } else { 420.0 } * (1.0 + 1.3 * kick);
-                let neon_r = if battle { 8.0 } else { 14.0 } + (if battle { 2.0 } else { 3.0 }) * kick;
+                let neon_i = if battle { 70.0 } else { 420.0 } * (1.0 + 1.3 * kick);
+                let neon_r = if battle { 6.0 } else { 14.0 } + (if battle { 1.5 } else { 3.0 }) * kick;
                 for &(x, z, color) in &NEON_LIGHTS {
                     let p = cell_to_world(IVec2::new(x, z));
                     // Raise neon slightly so façades catch a cool wash.
@@ -1646,12 +1646,15 @@ fn spawn_surface_buildings(
             );
             // Night façade tints: cool dusk walls + occasional warm/cyan
             // "lit floor" boosts (shader also adds procedural window glitter).
+            // Dim, dusk-painted concrete. The previous cyan neon catch
+            // ([0.45, 0.68, 0.78]) made the near-left wall the brightest
+            // thing in the battle frame and drowned the sodium pools.
             let tint = match i % 5 {
-                0 => [0.62, 0.52, 0.40, 1.0],       // warm dusk wall
-                1 => [0.48, 0.46, 0.52, 1.0],       // cool-neutral dusk
-                2 => [0.72, 0.50, 0.38, 1.0],       // sodium-washed façade
-                3 => [1.15, 0.78, 0.35, 1.0],       // lit warm floors
-                _ => [0.45, 0.68, 0.78, 1.0],       // sparse cyan neon catch
+                0 => [0.46, 0.38, 0.30, 1.0],       // warm dusk wall
+                1 => [0.32, 0.32, 0.36, 1.0],       // cool-neutral dusk
+                2 => [0.52, 0.38, 0.28, 1.0],       // sodium-washed façade
+                3 => [0.70, 0.48, 0.24, 1.0],       // lit warm floors (muted)
+                _ => [0.22, 0.26, 0.32, 1.0],       // dim cool dusk, not neon
             };
             engine.set_color_tint(h, tint);
             handles.push(h);
@@ -1893,29 +1896,52 @@ pub fn combat_camera(
                 .find(|m| m.team == Team::Enemy && !m.destroyed)
         });
 
+    // Frame every living mech (both Angels and both Evas). A two-shot on
+    // the selected pair put the camera on Mass's side of the street and
+    // left the crimson Angel off the right edge.
+    let mut pts: Vec<Vec3> = mission
+        .mechs
+        .iter()
+        .filter(|m| !m.destroyed)
+        .map(|m| cell_to_world(m.position))
+        .collect();
+    if pts.is_empty() {
+        pts.push(Vec3::new(6.0, 0.0, 7.0));
+    }
+    let n = pts.len() as f32;
+    let center = pts.iter().copied().sum::<Vec3>() / n;
+
     let p = player
         .map(|m| cell_to_world(m.position))
-        .unwrap_or(Vec3::new(2.0, 0.0, 6.0));
+        .unwrap_or(center);
     let e = enemy
         .map(|m| cell_to_world(m.position))
-        .unwrap_or(Vec3::new(12.0, 0.0, 8.0));
-
-    let focus = (p + e) * 0.5 + Vec3::Y * 1.35;
-    let along = (e - p).normalize_or_zero();
+        .unwrap_or(center);
+    let mut along = (e - p).normalize_or_zero();
+    if along.length_squared() < 0.01 {
+        along = Vec3::X;
+    }
     let side = along.cross(Vec3::Y).normalize_or_zero();
+
+    let focus = center + Vec3::Y * 1.35;
+    let radius = pts
+        .iter()
+        .map(|q| Vec3::new(q.x - center.x, 0.0, q.z - center.z).length())
+        .fold(0.0f32, f32::max)
+        + 1.1;
 
     let k = (impact_t / 1.15).clamp(0.0, 1.0);
     let k = k * k;
     let punch = impact_envelope(punch_t, IMPACT_PUNCH_SECS);
 
-    // Lower ¾ anime combat frame: stay inside the 8×8 so canyon walls + dusk
-    // sky sillhouette the lane. Pull back enough that horizon glow reads
-    // between towers; punch is a sharp FOV/dolly jolt (hit-stop beat).
-    let dist = 7.8 - k * 1.6 - punch * 0.7;
+    // Lower ¾ anime combat frame: stay in the canyon, pull back so the
+    // full group fits, and keep the side offset modest so the far Angel
+    // stays in front of the camera. Punch is a sharp FOV/dolly jolt.
+    let dist = (8.5 + radius * 0.22 - k * 1.6 - punch * 0.7).clamp(7.6, 11.4);
     let jolt = (punch_t * 53.0).sin() * punch * 0.24;
-    let side_off = 2.55 - k * 0.55 + jolt;
-    let height = 1.75 - k * 0.2 + punch * 0.08;
-    let fov = 0.82 + k * 0.12 + punch * 0.10;
+    let side_off = 0.95 - k * 0.2 + jolt;
+    let height = 1.95 - k * 0.2 + punch * 0.08;
+    let fov = 0.88 + k * 0.12 + punch * 0.10;
 
     let eye = focus - along * dist + side * side_off + Vec3::Y * height;
     // Look toward upper façades / dusk band for anime street sillhouette.
@@ -2127,6 +2153,29 @@ mod tests {
         // Moderate gain — values well above 1 still Reinhard toward grey.
         for tint in [player, splinter, mass] {
             assert!(tint[0].max(tint[1]).max(tint[2]) < 2.5);
+        }
+    }
+
+    #[test]
+    fn combat_camera_frames_both_angels_on_the_opening() {
+        let mission = Mission::new_skirmish();
+        let cam = combat_camera(&mission, 0, 10, 0.0, 0.0);
+        let eye = Vec3::from(cam.transform.position);
+        let q = Quat::from_xyzw(
+            cam.transform.orientation.v.x,
+            cam.transform.orientation.v.y,
+            cam.transform.orientation.v.z,
+            cam.transform.orientation.s,
+        );
+        let look = q * -Vec3::Z;
+        for id in [0_u32, 1, 10, 11] {
+            let p = cell_to_world(mission.mech(id).unwrap().position);
+            let dir = (p - eye).normalize_or_zero();
+            let d = look.dot(dir);
+            assert!(
+                d > 0.50,
+                "mech {id} is not in the default battle frame (dot={d:.3})"
+            );
         }
     }
 }
