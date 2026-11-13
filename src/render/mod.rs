@@ -551,8 +551,6 @@ impl Arena {
             ViewMode::CitySurface | ViewMode::Battle => {
                 // Warm sodium + cool neon accents. Budget: 2 sodium + 1 neon
                 // so punch/telegraph/wreck/AT-Field still fit under MAX=8.
-                // Lavapipe reads pools weakly on flat asphalt — bright, wide,
-                // slightly low so the street gets the lobe.
                 // Only mech (sodium-language) impacts kick the street lamps —
                 // Angel hits keep their own magenta/crimson ground flash.
                 let kick = self
@@ -562,15 +560,19 @@ impl Arena {
                     .map(|f| impact_envelope(f.t, f.duration))
                     .fold(0.0f32, f32::max);
                 // Warmer street lamps — more orange, less yellow-white wash.
+                // Surface keeps a wide, hot lobe so lavapipe reads pools from
+                // the overview. Battle sits inside that lobe, so the same 980
+                // flood was bleaching nearby walls and pale armor plates.
                 let sodium = [1.0, 0.42, 0.08];
-                let sodium_i = 980.0 * (1.0 + 2.8 * kick);
-                let sodium_r = 18.0 + 5.0 * kick;
+                let battle = self.kind == ViewMode::Battle;
+                let sodium_i = if battle { 300.0 } else { 980.0 } * (1.0 + 2.8 * kick);
+                let sodium_r = if battle { 9.5 } else { 18.0 } + (if battle { 3.0 } else { 5.0 }) * kick;
                 for &(x, z) in &SODIUM_CELLS {
                     let p = cell_to_world(IVec2::new(x, z));
                     push(&mut lights, [p.x, 1.95, p.z], sodium, sodium_i, sodium_r);
                 }
-                let neon_i = 420.0 * (1.0 + 1.3 * kick);
-                let neon_r = 14.0 + 3.0 * kick;
+                let neon_i = if battle { 160.0 } else { 420.0 } * (1.0 + 1.3 * kick);
+                let neon_r = if battle { 8.0 } else { 14.0 } + (if battle { 2.0 } else { 3.0 }) * kick;
                 for &(x, z, color) in &NEON_LIGHTS {
                     let p = cell_to_world(IVec2::new(x, z));
                     // Raise neon slightly so façades catch a cool wash.
@@ -607,12 +609,15 @@ impl Arena {
                     .copied()
                     .unwrap_or(0.0);
                 let boost = 1.0 + 2.4 * (pulse / 0.7).clamp(0.0, 1.0);
+                // Dim idle cage — a 55-nit cyan point on the torso was
+                // bleaching team colors off the plates (then Reinhard
+                // crushed them toward white). Flare still pops on a deflect.
                 push(
                     &mut lights,
-                    [vis.pos.x, 1.55, vis.pos.z],
+                    [vis.pos.x, 1.85, vis.pos.z],
                     [0.25, 0.75, 1.2],
-                    55.0 * boost,
-                    5.5,
+                    14.0 * boost,
+                    4.2,
                 );
             }
             // High-sync core flashes / cracks — tight, bright (wins a slot after impact).
@@ -851,11 +856,12 @@ impl Arena {
                     .map(|t| (*t / 0.85).clamp(0.0, 1.0))
                     .unwrap_or(0.0);
                 if mech.at_field > 0 {
-                    // Light cyan veil while AT Field is up — keep team color
-                    // readable; flare still pops on a deflect.
-                    tint[0] = (tint[0] * 0.88 + 0.06 + 0.45 * flare).min(2.2);
-                    tint[1] = (tint[1] * 0.94 + 0.18 + 0.65 * flare).min(2.6);
-                    tint[2] = (tint[2] * 0.92 + 0.35 + 1.1 * flare).min(3.2);
+                    // Subtle cyan sheen while the cage is up. The previous
+                    // additive lift pushed plates toward white under Reinhard,
+                    // so team colors only read in the HUD.
+                    tint[0] = (tint[0] * 0.98 + 0.01 + 0.18 * flare).min(1.8);
+                    tint[1] = (tint[1] * 0.99 + 0.03 + 0.28 * flare).min(2.0);
+                    tint[2] = (tint[2] * 1.00 + 0.06 + 0.40 * flare).min(2.2);
                 } else if breaking > 0.0 {
                     // White-cyan pop as the cage shatters (charges already spent).
                     tint[0] = (tint[0] + 1.1 * breaking).min(3.2);
@@ -1714,15 +1720,16 @@ fn mech_scale(mech: &Mech) -> f32 {
 }
 
 fn mech_tint(mech: &Mech, pulse: f32) -> [f32; 4] {
-    // Saturated team colors at moderate gain: high pre-Reinhard values were
-    // compressing armor plates toward grey. Cool steel-blue players vs
-    // Splinter-violet / Mass-crimson, so silhouettes are not grey boxes.
+    // Chromatic team colors at moderate gain. Quaternius pale albedo plus
+    // a 0.14 gray emissive (untinted by Blade) and a hot dusk key were
+    // Reinhard-crushing steel-blue / violet / crimson toward white.
+    // Peaks stay under ~1.7; the shader now tints emissive to match.
     match mech.alien {
-        Some(AlienKind::Mass) => [2.15 * pulse, 0.52 * pulse, 0.38 * pulse, 1.0],
-        Some(AlienKind::Splinter) => [1.45 * pulse, 0.36 * pulse, 2.15 * pulse, 1.0],
+        Some(AlienKind::Mass) => [1.65 * pulse, 0.12 * pulse, 0.10 * pulse, 1.0],
+        Some(AlienKind::Splinter) => [0.95 * pulse, 0.22 * pulse, 1.70 * pulse, 1.0],
         None => match mech.team {
-            Team::Player => [0.82 * pulse, 1.32 * pulse, 1.95 * pulse, 1.0],
-            Team::Enemy => [2.05 * pulse, 0.72, 0.48, 1.0],
+            Team::Player => [0.20 * pulse, 0.48 * pulse, 1.15 * pulse, 1.0],
+            Team::Enemy => [1.42 * pulse, 0.28, 0.16, 1.0],
         },
     }
 }

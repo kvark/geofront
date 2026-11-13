@@ -279,28 +279,41 @@ fn raster_fs(input: VertexOutput) -> @location(0) vec4<f32> {
     let visibility = directional_shadow(input.world_pos, n);
     let light = (mat.diffuse_albedo * brdf.diffuse + brdf.specular) * frame_params.light_color.xyz * visibility;
     let ambient = evaluate_ambient(mat) * frame_params.ambient_color.xyz;
-    let emissive = draw_params.emissive_factor.rgb * textureSample(emissive_tex, samp, input.uv).rgb;
+    // Quaternius mechs ship base_color_factor=1.45 and a flat 0.14 gray
+    // emissive. Blade multiplies color_tint into base_color only, so that
+    // gray emissive was a white floor under pale plates and a gray haze
+    // on shadowed Angels — team colors died in the Reinhard midtones.
+    var emissive = draw_params.emissive_factor.rgb * textureSample(emissive_tex, samp, input.uv).rgb;
+    emissive *= draw_params.base_color_factor.rgb;
     let local = shade_local_light(mat, n, v, input.world_pos);
 
-    // Cool anime rim / fresnel. Stronger near the street so mech armor plates
-    // catch a hard edge against warm sodium; façades keep a softer halo.
+    // Cool anime rim / fresnel. A strong street-level rim was filling the
+    // canyon like noon; keep a hard plate edge, not a cyan wash.
     let ndotv = max(dot(n, v), 0.0);
     let rim = pow(1.0 - ndotv, 2.6);
     let street = smoothstep(5.0, 1.6, input.world_pos.y);
-    let rim_col = vec3<f32>(0.55, 0.85, 1.45) * rim * (1.15 + 0.85 * street);
+    // 1 in the battle street camera (~3m), ~0 from the surface overview (~18m).
+    let cam_low = smoothstep(14.0, 5.0, frame_params.camera_pos.y);
+    let rim_col = vec3<f32>(0.55, 0.85, 1.45) * rim * mix(0.70, 0.32, cam_low) * (0.85 + 0.35 * street);
 
-    // Lit office bands on tall vertical façades only (y > ~3 m) so mech plates
-    // are not stamped with the same mosaic. Regular floor/column grid with
-    // soft pane edges; occupancy is hashed per window, not per pixel.
+    // Lit office windows on tall vertical façades only (y > ~3 m) so mech
+    // plates are not stamped. Smaller, less regular panes: higher frequency,
+    // per-floor stagger, per-pane size/occupancy — no per-pixel noise.
     let facade = wall_amt * smoothstep(2.6, 3.5, input.world_pos.y);
-    let floor_id = floor(input.world_pos.y * 1.15);
-    let col_id = floor(along * 0.95);
-    let pane_u = abs(fract(along * 0.95) - 0.5);
-    let pane_v = abs(fract(input.world_pos.y * 1.15) - 0.5);
-    let pane = smoothstep(0.42, 0.28, pane_u) * smoothstep(0.40, 0.26, pane_v);
+    let freq_x = 1.85;
+    let freq_y = 1.55;
+    let floor_id = floor(input.world_pos.y * freq_y);
+    let stagger = (hash31(vec3<f32>(floor_id, 3.0, 7.0)) - 0.5) * 0.45;
+    let col_id = floor(along * freq_x + stagger);
     let h = hash31(vec3<f32>(col_id, floor_id, 11.0));
     let h2 = hash31(vec3<f32>(col_id, floor_id, 29.0));
-    let lit = step(0.62, h) * facade * pane;
+    let half_u = mix(0.08, 0.17, h2);
+    let half_v = mix(0.09, 0.18, h);
+    let pane_u = abs(fract(along * freq_x + stagger) - 0.5);
+    let pane_v = abs(fract(input.world_pos.y * freq_y) - 0.5);
+    let pane = smoothstep(half_u + 0.03, half_u - 0.01, pane_u)
+        * smoothstep(half_v + 0.03, half_v - 0.01, pane_v);
+    let lit = step(0.55, h) * facade * pane;
     var window_col = mix(vec3<f32>(1.55, 0.82, 0.28), vec3<f32>(0.35, 0.95, 1.15), step(0.88, h2));
     window_col *= lit * (0.55 + 0.55 * h2);
 
@@ -314,9 +327,10 @@ fn raster_fs(input: VertexOutput) -> @location(0) vec4<f32> {
     color = mix(color, fog_col, clamp(fog_t, 0.0, 0.22));
 
     let mapped = color / (color + vec3<f32>(1.0));
-    // Mild S-curve after Reinhard to un-wash midtones without crushing shadows.
+    // Stronger midtone contrast in the street camera; surface overview keeps
+    // the milder S-curve so the already-dusk establishing shot does not crush.
     let contrast = mapped * mapped * (3.0 - 2.0 * mapped);
-    let graded = mix(mapped, contrast, 0.22);
+    let graded = mix(mapped, contrast, mix(0.22, 0.42, cam_low));
     return vec4<f32>(encode_surface_color(graded, frame_params.settings.y > 0.5), 1.0);
 }
 
@@ -412,13 +426,18 @@ fn raster_sky_fs(input: SkyOutput) -> @location(0) vec4<f32> {
             // stock raster.wgsl — re-diff when bumping the blade-render pin.
             let t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
             let sun_band = exp(-pow((dir.y + 0.04) / 0.14, 2.0));
-            let horizon = vec3<f32>(2.8, 0.62, 0.12);
-            let haze = vec3<f32>(0.62, 0.22, 0.78);
+            // Battle camera looks into the dusk band from the street; the
+            // stock horizon bloom blew the canyon to noon. Ease the limb
+            // when the camera is low. Surface overview (cam_y ~18) keeps
+            // the full glow.
+            let cam_low = smoothstep(14.0, 5.0, sky_params.camera_pos.y);
+            let horizon = mix(vec3<f32>(2.8, 0.62, 0.12), vec3<f32>(0.85, 0.22, 0.08), cam_low);
+            let haze = mix(vec3<f32>(0.62, 0.22, 0.78), vec3<f32>(0.16, 0.06, 0.28), cam_low);
             let zenith = vec3<f32>(0.01, 0.025, 0.1);
             let low = mix(horizon, haze, smoothstep(0.0, 0.35, t));
             color = mix(low, zenith, smoothstep(0.1, 1.0, t));
             // Hotter limb along the dusk line (Eva city-battle glow).
-            color = color + vec3<f32>(3.4, 0.85, 0.18) * sun_band * 0.7;
+            color = color + vec3<f32>(3.4, 0.85, 0.18) * sun_band * mix(0.7, 0.12, cam_low);
         }
     }
     let mapped = color / (color + vec3<f32>(1.0));

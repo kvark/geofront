@@ -428,14 +428,15 @@ pub enum AtFieldHudState {
 }
 
 impl AtFieldHudState {
-    /// Compact list-row mark (`AT●`, `AT●●`, `AT○`).
+    /// Compact list-row mark. ASCII `#` / `-` — egui's default font has no
+    /// ● / ○ (they rendered as tofu). Selected-unit detail also draws pips.
     pub fn list_mark(&self) -> String {
         match *self {
             Self::Ready { charges, .. } => {
-                let pips: String = (0..charges).map(|_| '●').collect();
+                let pips: String = (0..charges).map(|_| '#').collect();
                 format!("  AT{pips}")
             }
-            Self::Shattered { .. } => "  AT○".into(),
+            Self::Shattered { .. } => "  AT-".into(),
         }
     }
 
@@ -657,7 +658,7 @@ mod tests {
         assert_eq!(coil.at_field_max(), 1);
         let ready = coil.at_field_hud_state().unwrap();
         assert_eq!(ready, AtFieldHudState::Ready { charges: 1, max: 1 });
-        assert_eq!(ready.list_mark(), "  AT●");
+        assert_eq!(ready.list_mark(), "  AT#");
         assert!(ready.detail_line().contains("ready"));
         assert!(ready.detail_line().contains("1/1"));
 
@@ -669,7 +670,7 @@ mod tests {
                 recharges_on_end_turn: true
             }
         );
-        assert_eq!(sh.list_mark(), "  AT○");
+        assert_eq!(sh.list_mark(), "  AT-");
         assert!(sh.detail_line().contains("shattered"));
         assert!(sh.detail_line().contains("End Turn"));
 
@@ -677,7 +678,7 @@ mod tests {
         assert_eq!(mass.at_field_max(), 2);
         let mready = mass.at_field_hud_state().unwrap();
         assert_eq!(mready, AtFieldHudState::Ready { charges: 2, max: 2 });
-        assert_eq!(mready.list_mark(), "  AT●●");
+        assert_eq!(mready.list_mark(), "  AT##");
         assert!(mready.detail_line().contains("2/2"));
 
         let mut mass2 = mass;

@@ -174,6 +174,67 @@ fn initial_view_mode() -> render::ViewMode {
     }
 }
 
+
+/// Tokyo-3 dusk raster grade. Battle uses a darker canyon key so sodium
+/// pools stay the bright points; surface overview keeps the existing dusk
+/// look (already reads correctly from above).
+fn dusk_raster_config(battle: bool) -> blade_render::RasterConfig {
+    // Lower evening sun, more grazing for long canyon shadows.
+    let light_dir = mint::Vector3 {
+        x: 0.78,
+        y: 0.22,
+        z: 0.12,
+    };
+    let (light_color, ambient_color, shadow_strength) = if battle {
+        // Dimmer warm key + tighter indigo fill. The close street camera
+        // was blowing midtones toward noon under the surface-grade key.
+        (
+            mint::Vector3 {
+                x: 2.25,
+                y: 0.72,
+                z: 0.20,
+            },
+            mint::Vector3 {
+                x: 0.024,
+                y: 0.022,
+                z: 0.058,
+            },
+            0.90,
+        )
+    } else {
+        (
+            mint::Vector3 {
+                x: 8.6,
+                y: 3.15,
+                z: 0.92,
+            },
+            mint::Vector3 {
+                x: 0.055,
+                y: 0.05,
+                z: 0.12,
+            },
+            0.72,
+        )
+    };
+    blade_render::RasterConfig {
+        clear_color: blade_graphics::TextureColor::OpaqueBlack,
+        light_dir,
+        light_color,
+        ambient_color,
+        space_sky: false,
+        // Tight ortho around the 8×8 plaza; dual receiver bias from
+        // blade#390 keeps skinned Quaternius mechs lit under lavapipe.
+        directional_shadows: Some(blade_render::DirectionalShadowConfig {
+            resolution: 2048,
+            distance: 48.0,
+            depth: 180.0,
+            strength: shadow_strength,
+            normal_bias: 0.15,
+            depth_bias: 0.07,
+        }),
+    }
+}
+
 struct QuitEvent;
 
 struct Game {
@@ -299,42 +360,11 @@ impl Game {
         );
 
         // Tokyo-3 dusk grade: low warm key, tight indigo fill, contact
-        // shadows on (Blade skinned-receiver bias). Warmer street lamps and
-        // midtone contrast live in raster.wgsl / Arena lights — key is
-        // slightly less hot so Reinhard does not wash the canyon.
-        engine.set_raster_config(blade_render::RasterConfig {
-            clear_color: blade_graphics::TextureColor::OpaqueBlack,
-            // Lower evening sun, more grazing for long canyon shadows.
-            light_dir: mint::Vector3 {
-                x: 0.78,
-                y: 0.22,
-                z: 0.12,
-            },
-            // Warm dusk key — enough for Quaternius albedo, not so hot that
-            // midtones flatten after tone-map.
-            light_color: mint::Vector3 {
-                x: 8.6,
-                y: 3.15,
-                z: 0.92,
-            },
-            // Tight indigo fill so sodium + neon carry the street.
-            ambient_color: mint::Vector3 {
-                x: 0.055,
-                y: 0.05,
-                z: 0.12,
-            },
-            space_sky: false,
-            // Tight ortho around the 8×8 plaza; dual receiver bias from
-            // blade#390 keeps skinned Quaternius mechs lit under lavapipe.
-            directional_shadows: Some(blade_render::DirectionalShadowConfig {
-                resolution: 2048,
-                distance: 48.0,
-                depth: 180.0,
-                strength: 0.72,
-                normal_bias: 0.15,
-                depth_bias: 0.07,
-            }),
-        });
+        // shadows on (Blade skinned-receiver bias). Battle gets a darker
+        // canyon key so sodium pools stay the bright points.
+        engine.set_raster_config(dusk_raster_config(
+            initial_view_mode() == render::ViewMode::Battle,
+        ));
 
         let egui_context = egui::Context::default();
         egui_context.set_visuals(egui::Visuals::dark());
@@ -978,6 +1008,8 @@ impl Game {
                     self.view_mode = mode;
                     self.impact_timer = 0.0;
                     self.enemy_step_timer = 0.0;
+                    self.engine
+                        .set_raster_config(dusk_raster_config(mode == render::ViewMode::Battle));
                     self.arena = render::Arena::spawn(&mut self.engine, mode, &self.mission);
                     self.fly = render::FlyCam::for_mode(mode);
                 }
