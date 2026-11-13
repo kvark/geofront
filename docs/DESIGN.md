@@ -33,6 +33,7 @@ Canonical pitch notes: [`eva.md`](https://github.com/kvark/ideas/blob/master/gam
 | Angels | Distinct magenta/crimson strike language + debug-line presence; AT Field cyan cage / shatter remnant + charge pips (Mass + player) |
 | Camera | Low ¾ anime combat framing; surface overview as canyon establishing shot |
 | Atmosphere | Soft depth haze toward dusk; contact shadows without blacking skinned mechs |
+| HUD | NERV-style tactical panel (orange / amber hierarchy). Camera and debug help sit behind **H** or **F1**. |
 
 Reference fantasy: Evangelion / Tokyo-3 city battle stills. Art budget is Kenney
 city kits + Quaternius mechs (CC0) — aim for *anime-adjacent screenshots*, not
@@ -42,9 +43,10 @@ film stills.
 
 Stock Blade WGSL comes from `blade_render::shader_dir()` (no full-tree vendor).
 The only game override is `assets/shaders/raster.wgsl` (Tokyo-3 twilight sky,
-cool rim, procedural window glitter, warm depth haze). Native materializes
-stock + overlay under `asset-cache/shaders/`; WASM embeds the same merge via
-`build.rs` + `include_dir!`. Details: [assets/README.md](../assets/README.md).
+cool rim, painted panel seams, regular office-window bands, deterministic
+local-light sum, dusk grade). Native materializes stock + overlay under
+`asset-cache/shaders/`; WASM embeds the same merge via `build.rs` +
+`include_dir!`. Details: [assets/README.md](../assets/README.md).
 
 ## Mechanics (locked direction)
 
@@ -68,7 +70,8 @@ stock + overlay under `asset-cache/shaders/`; WASM embeds the same merge via
 When judging a build under lavapipe:
 
 1. Does the mid-battle shot read as **dusk canyon** (warm key, cool fill, sky glow)?
-2. Do **sodium / neon** pools and window glitter sell night city?
-3. Are player mechs **readable heroes**, not grain silhouettes?
+2. Do **sodium / neon** pools and lit office bands sell night city without grain?
+3. Are player mechs **readable heroes** with team color, not grey or grain silhouettes?
 4. Do Angels read vs mechs (silhouette/FX, AT Field cyan cage / shatter remnant + charge pips on Mass + players, glanceable sync % / bar, high-sync core flash / crack) without new meshes?
 5. Does `GEOFRONT_AUTOPLAY=1` still reach **VICTORY**?
+6. Does the side panel read as a **NERV tactical HUD**, with help behind H / F1?

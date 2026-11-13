@@ -200,74 +200,42 @@ fn angular_attenuation(light: LocalLight, direction_to_light: vec3<f32>) -> f32 
     return pow(blend, light.spot.z);
 }
 
-fn local_light_score(light: LocalLight, world_pos: vec3<f32>, n: vec3<f32>) -> f32 {
-    let delta = light.position_range.xyz - world_pos;
-    let dist2 = max(dot(delta, delta), 0.04);
-    let dist = sqrt(dist2);
-    let range = max(light.position_range.w, 0.01);
-    let falloff = max(1.0 - dist / range, 0.0);
-    let ldir = delta / dist;
-    let ndotl = max(dot(n, ldir), 0.0);
-    let intensity = max(light.intensity.x, max(light.intensity.y, light.intensity.z));
-    return intensity * angular_attenuation(light, ldir) * falloff * falloff * (0.2 + 0.8 * ndotl);
-}
-
 fn shade_local_light(mat: Material, n: vec3<f32>, v: vec3<f32>, world_pos: vec3<f32>) -> vec3<f32> {
     let count = min(u32(light_params.count_seed.x), MAX_LOCAL_LIGHTS);
     if (count == 0u) {
         return vec3<f32>(0.0);
     }
 
-    // Weighted reservoir over the submitted lights. Each fragment independently
-    // samples one light with probability proportional to its local score.
-    // TODO: spatial acceleration once scenes carry more local lights than this cap.
-    var chosen = 0u;
-    var chosen_score = 0.0;
-    var weight_sum = 0.0;
+    // Deterministic sum of every submitted local light. Blade's stock path uses
+    // a 1-light spatial reservoir (hash31 on world_pos) that shows up as
+    // dithered grain on lavapipe façades, asphalt, and mech plates. Geofront
+    // stays under MAX_LOCAL_LIGHTS=8, so a full loop is cheap and stable.
+    var acc = vec3<f32>(0.0);
     for (var i = 0u; i < MAX_LOCAL_LIGHTS; i++) {
         if (i >= count) {
             break;
         }
-        let score = local_light_score(light_params.lights[i], world_pos, n);
-        if (score <= 0.0) {
+        let light = light_params.lights[i];
+        let delta = light.position_range.xyz - world_pos;
+        let dist2 = max(dot(delta, delta), 0.04);
+        let dist = sqrt(dist2);
+        let range = max(light.position_range.w, 0.01);
+        let falloff = max(1.0 - dist / range, 0.0);
+        if (falloff <= 0.0) {
             continue;
         }
-        weight_sum += score;
-        let u = hash31(world_pos + vec3<f32>(f32(i), light_params.count_seed.y, score));
-        if (u * weight_sum < score) {
-            chosen = i;
-            chosen_score = score;
-        }
+        let ldir = delta / dist;
+        let brdf = evaluate_brdf(mat, n, v, ldir);
+        let atten = angular_attenuation(light, ldir) * falloff * falloff / dist2;
+        acc += (mat.diffuse_albedo * brdf.diffuse + brdf.specular) * light.intensity.xyz * atten;
     }
-    if (weight_sum <= 0.0) {
-        return vec3<f32>(0.0);
-    }
-
-    let light = light_params.lights[chosen];
-    let delta = light.position_range.xyz - world_pos;
-    let dist2 = max(dot(delta, delta), 0.04);
-    let dist = sqrt(dist2);
-    let range = max(light.position_range.w, 0.01);
-    let falloff = max(1.0 - dist / range, 0.0);
-    let ldir = delta / dist;
-    let brdf = evaluate_brdf(mat, n, v, ldir);
-    let atten = angular_attenuation(light, ldir) * falloff * falloff / dist2;
-    // Divide by the reservoir selection probability so the result estimates
-    // the sum of all local lights rather than their weighted average.
-    let inverse_probability = weight_sum / max(chosen_score, 0.000001);
-    return (mat.diffuse_albedo * brdf.diffuse + brdf.specular)
-        * light.intensity.xyz * atten * inverse_probability;
+    return acc;
 }
 
 @fragment
 fn raster_fs(input: VertexOutput) -> @location(0) vec4<f32> {
     let mr_sample = textureSample(metallic_roughness_tex, samp, input.uv);
-    let base_color = textureSample(base_color_tex, samp, input.uv).rgb * draw_params.base_color_factor.rgb;
-    let mat = material_from_metallic_roughness(
-        base_color,
-        clamp(draw_params.material.y * mr_sample.z, 0.0, 1.0),
-        clamp(draw_params.material.z * mr_sample.y, 0.0, 1.0),
-    );
+    var base_color = textureSample(base_color_tex, samp, input.uv).rgb * draw_params.base_color_factor.rgb;
 
     var n = normalize(input.normal);
     let normal_scale = draw_params.material.x;
@@ -280,6 +248,30 @@ fn raster_fs(input: VertexOutput) -> @location(0) vec4<f32> {
         n = normalize(tbn * n_tangent);
     }
 
+    // Kenney city UVs sit on solid colormap swatches, so stretched façades read
+    // as mosaic blocks. Soft world-space panel seams + local contrast sell
+    // painted concrete/metal without a higher-res art pass, and without
+    // per-pixel hash grain.
+    let wall_amt = smoothstep(0.45, 0.88, 1.0 - abs(n.y));
+    let along = select(input.world_pos.x, input.world_pos.z, abs(n.x) > abs(n.z));
+    let seam_y = abs(fract(input.world_pos.y * 1.05) - 0.5);
+    let seam_x = abs(fract(along * 0.62) - 0.5);
+    let seams = wall_amt * (
+        smoothstep(0.47, 0.50, seam_y) * 0.16
+        + smoothstep(0.47, 0.50, seam_x) * 0.08
+    );
+    let paint = 0.035 * sin(input.world_pos.x * 0.55 + input.world_pos.z * 0.31)
+        * sin(input.world_pos.y * 0.42 + input.world_pos.x * 0.18);
+    let luma = dot(base_color, vec3<f32>(0.30, 0.52, 0.18));
+    let contrasted = mix(vec3<f32>(luma), base_color, 1.22);
+    base_color = mix(base_color, contrasted, 0.55) * (1.0 - seams + paint);
+
+    let mat = material_from_metallic_roughness(
+        base_color,
+        clamp(draw_params.material.y * mr_sample.z, 0.0, 1.0),
+        clamp(draw_params.material.z * mr_sample.y, 0.0, 1.0),
+    );
+
     let v = normalize(frame_params.camera_pos.xyz - input.world_pos);
     let l = normalize(frame_params.light_dir.xyz);
 
@@ -290,31 +282,42 @@ fn raster_fs(input: VertexOutput) -> @location(0) vec4<f32> {
     let emissive = draw_params.emissive_factor.rgb * textureSample(emissive_tex, samp, input.uv).rgb;
     let local = shade_local_light(mat, n, v, input.world_pos);
 
-    // Cool anime rim / fresnel edge so mechs read against warm dusk sodium.
+    // Cool anime rim / fresnel. Stronger near the street so mech armor plates
+    // catch a hard edge against warm sodium; façades keep a softer halo.
     let ndotv = max(dot(n, v), 0.0);
     let rim = pow(1.0 - ndotv, 2.6);
-    let rim_col = vec3<f32>(0.55, 0.85, 1.45) * rim * 1.35;
+    let street = smoothstep(5.0, 1.6, input.world_pos.y);
+    let rim_col = vec3<f32>(0.55, 0.85, 1.45) * rim * (1.15 + 0.85 * street);
 
-    // Procedural lit-window glitter on vertical faces (Tokyo-3 night).
-    // Mostly warm sodium windows; sparse cool accents for neon contrast.
-    let wall = smoothstep(0.5, 0.92, 1.0 - abs(n.y));
-    let cell = floor(input.world_pos * vec3<f32>(1.55, 2.2, 1.55));
-    let h = hash31(cell);
-    let h2 = hash31(cell + vec3<f32>(17.0, 9.0, 3.0));
-    let lit = step(0.68, h) * wall;
-    var window_col = mix(vec3<f32>(3.2, 1.45, 0.35), vec3<f32>(0.5, 1.45, 1.7), step(0.85, h2));
-    window_col *= lit * (1.0 + 1.4 * h2);
+    // Lit office bands on tall vertical façades only (y > ~3 m) so mech plates
+    // are not stamped with the same mosaic. Regular floor/column grid with
+    // soft pane edges; occupancy is hashed per window, not per pixel.
+    let facade = wall_amt * smoothstep(2.6, 3.5, input.world_pos.y);
+    let floor_id = floor(input.world_pos.y * 1.15);
+    let col_id = floor(along * 0.95);
+    let pane_u = abs(fract(along * 0.95) - 0.5);
+    let pane_v = abs(fract(input.world_pos.y * 1.15) - 0.5);
+    let pane = smoothstep(0.42, 0.28, pane_u) * smoothstep(0.40, 0.26, pane_v);
+    let h = hash31(vec3<f32>(col_id, floor_id, 11.0));
+    let h2 = hash31(vec3<f32>(col_id, floor_id, 29.0));
+    let lit = step(0.62, h) * facade * pane;
+    var window_col = mix(vec3<f32>(1.55, 0.82, 0.28), vec3<f32>(0.35, 0.95, 1.15), step(0.88, h2));
+    window_col *= lit * (0.55 + 0.55 * h2);
 
     var color = ambient + light + local + emissive + rim_col + window_col;
 
-    // Light depth haze toward warm dusk (not purple — purple washed asphalt lilac).
+    // Light depth haze toward warm dusk. Lower density than the previous 0.38
+    // wash so midtones stay a place, not a sodium fog.
     let dist = length(frame_params.camera_pos.xyz - input.world_pos);
-    let fog_t = 1.0 - exp(-max(dist - 10.0, 0.0) * 0.028);
-    let fog_col = vec3<f32>(1.1, 0.45, 0.22);
-    color = mix(color, fog_col, clamp(fog_t, 0.0, 0.38));
+    let fog_t = 1.0 - exp(-max(dist - 14.0, 0.0) * 0.018);
+    let fog_col = vec3<f32>(0.95, 0.38, 0.18);
+    color = mix(color, fog_col, clamp(fog_t, 0.0, 0.22));
 
     let mapped = color / (color + vec3<f32>(1.0));
-    return vec4<f32>(encode_surface_color(mapped, frame_params.settings.y > 0.5), 1.0);
+    // Mild S-curve after Reinhard to un-wash midtones without crushing shadows.
+    let contrast = mapped * mapped * (3.0 - 2.0 * mapped);
+    let graded = mix(mapped, contrast, 0.22);
+    return vec4<f32>(encode_surface_color(graded, frame_params.settings.y > 0.5), 1.0);
 }
 
 struct SkyOutput {

@@ -16,8 +16,8 @@ pub const CELL: f32 = 2.0;
 /// Three corners leave two MAX_LOCAL_LIGHTS slots for cyan/magenta neon.
 const SODIUM_CELLS: [(i32, i32); 2] = [(1, 2), (6, 5)];
 
-/// Cool anime accent light (cell + RGB). One neon leaves slots for VFX and
-/// keeps Blade's 1-light reservoir from washing sodium pools to noise.
+/// Cool anime accent light (cell + RGB). One neon leaves slots for VFX.
+/// Local lights are summed in the Tokyo-3 raster overlay (no 1-light grain).
 const NEON_LIGHTS: [(i32, i32, [f32; 3]); 1] = [
     (4, 1, [0.3, 0.95, 1.0]), // cyan
 ];
@@ -561,9 +561,10 @@ impl Arena {
                     .filter(|f| strike_palette(f.kind).sodium_kick)
                     .map(|f| impact_envelope(f.t, f.duration))
                     .fold(0.0f32, f32::max);
-                let sodium = [1.0, 0.52, 0.12];
-                let sodium_i = 920.0 * (1.0 + 2.8 * kick);
-                let sodium_r = 20.0 + 5.0 * kick;
+                // Warmer street lamps — more orange, less yellow-white wash.
+                let sodium = [1.0, 0.42, 0.08];
+                let sodium_i = 980.0 * (1.0 + 2.8 * kick);
+                let sodium_r = 18.0 + 5.0 * kick;
                 for &(x, z) in &SODIUM_CELLS {
                     let p = cell_to_world(IVec2::new(x, z));
                     push(&mut lights, [p.x, 1.95, p.z], sodium, sodium_i, sodium_r);
@@ -850,10 +851,11 @@ impl Arena {
                     .map(|t| (*t / 0.85).clamp(0.0, 1.0))
                     .unwrap_or(0.0);
                 if mech.at_field > 0 {
-                    // Cool cyan veil while AT Field is up.
-                    tint[0] = (tint[0] * 0.72 + 0.15 + 0.55 * flare).min(2.4);
-                    tint[1] = (tint[1] * 0.85 + 0.45 + 0.85 * flare).min(3.0);
-                    tint[2] = (tint[2] + 0.95 + 1.4 * flare).min(4.2);
+                    // Light cyan veil while AT Field is up — keep team color
+                    // readable; flare still pops on a deflect.
+                    tint[0] = (tint[0] * 0.88 + 0.06 + 0.45 * flare).min(2.2);
+                    tint[1] = (tint[1] * 0.94 + 0.18 + 0.65 * flare).min(2.6);
+                    tint[2] = (tint[2] * 0.92 + 0.35 + 1.1 * flare).min(3.2);
                 } else if breaking > 0.0 {
                     // White-cyan pop as the cage shatters (charges already spent).
                     tint[0] = (tint[0] + 1.1 * breaking).min(3.2);
@@ -1468,7 +1470,7 @@ fn spawn_surface_roads(
     // Kenney road tiles are authored 1×1; CELL is 2. Scale to CELL so asphalt
     // covers the plaza. Darken + desaturate so sodium/neon/sky pop (less lilac).
     let plaza_tint = [0.09, 0.085, 0.08, 1.0];
-    let sodium_pad = [2.6, 1.35, 0.28, 1.0];
+    let sodium_pad = [2.4, 1.05, 0.16, 1.0];
     let cyan_pad = [0.55, 1.35, 1.55, 1.0];
     let magenta_pad = [1.55, 0.45, 1.25, 1.0];
     let road_scale = CELL; // 1×1 mesh → 2×2 cell cover
@@ -1517,7 +1519,7 @@ fn spawn_surface_roads(
             [pos.x, 0.0, pos.z],
             4.6,
         );
-        engine.set_color_tint(h, [3.2, 1.55, 0.35, 1.0]);
+        engine.set_color_tint(h, [3.0, 1.15, 0.18, 1.0]);
         handles.push(h);
     }
     // Neon accent fixtures — same mesh, cool tint for anime night read.
@@ -1712,17 +1714,15 @@ fn mech_scale(mech: &Mech) -> f32 {
 }
 
 fn mech_tint(mech: &Mech, pulse: f32) -> [f32; 4] {
-    // High gain + saturated team colors so mechs stay heroic against the
-    // darker Tokyo-3 twilight (Quaternius albedo ~0.2–0.35 + Reinhard).
-    // Cool player / warm enemy split reads through sodium + cyan neon.
-    // Angels lean bone/crimson (Mass) and magenta-violet (Splinter) so they
-    // do not read as recolored enemy mechs.
+    // Saturated team colors at moderate gain: high pre-Reinhard values were
+    // compressing armor plates toward grey. Cool steel-blue players vs
+    // Splinter-violet / Mass-crimson, so silhouettes are not grey boxes.
     match mech.alien {
-        Some(AlienKind::Mass) => [2.55 * pulse, 1.65 * pulse, 1.35 * pulse, 1.0],
-        Some(AlienKind::Splinter) => [1.65 * pulse, 0.85 * pulse, 2.75 * pulse, 1.0],
+        Some(AlienKind::Mass) => [2.15 * pulse, 0.52 * pulse, 0.38 * pulse, 1.0],
+        Some(AlienKind::Splinter) => [1.45 * pulse, 0.36 * pulse, 2.15 * pulse, 1.0],
         None => match mech.team {
-            Team::Player => [1.45 * pulse, 2.05 * pulse, 2.55 * pulse, 1.0],
-            Team::Enemy => [2.55 * pulse, 1.2, 0.88, 1.0],
+            Team::Player => [0.82 * pulse, 1.32 * pulse, 1.95 * pulse, 1.0],
+            Team::Enemy => [2.05 * pulse, 0.72, 0.48, 1.0],
         },
     }
 }
@@ -2106,5 +2106,20 @@ mod tests {
         assert!(angel_core_height(Some(AlienKind::Splinter)) > angel_core_height(Some(AlienKind::Mass)));
         assert!(angel_core_height(Some(AlienKind::Mass)) > 0.8);
         assert!(angel_core_height(None) > 1.0);
+    }
+
+    #[test]
+    fn team_tints_stay_saturated_not_grey() {
+        let player = mech_tint(&Mech::new_player(3, "Coil", IVec2::ZERO), 1.0);
+        let splinter = mech_tint(&Mech::new_alien(1, AlienKind::Splinter, IVec2::ZERO), 1.0);
+        let mass = mech_tint(&Mech::new_alien(2, AlienKind::Mass, IVec2::ZERO), 1.0);
+        // Player is cool steel-blue; Splinter violet; Mass crimson.
+        assert!(player[2] > player[0] + 0.4);
+        assert!(splinter[2] > splinter[1] + 0.8);
+        assert!(mass[0] > mass[2] + 0.8);
+        // Moderate gain — values well above 1 still Reinhard toward grey.
+        for tint in [player, splinter, mass] {
+            assert!(tint[0].max(tint[1]).max(tint[2]) < 2.5);
+        }
     }
 }

@@ -9,7 +9,7 @@ This directory holds **game-only overlays**. Today that is a single file:
 
 | File | Purpose |
 | --- | --- |
-| `raster.wgsl` | Tokyo-3 twilight sky + anime rim / window glitter / dusk fog |
+| `raster.wgsl` | Tokyo-3 twilight sky + anime rim / painted seams / office windows / dusk grade |
 
 ### How overlays layer
 
