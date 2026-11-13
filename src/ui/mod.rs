@@ -236,8 +236,8 @@ fn battle_panel(
                 .map(|p| {
                     let badge = format!("  SYNC {}%", p.sync_percent());
                     match p.sync_band() {
-                        SyncBand::High => format!("{badge}⚡"),
-                        SyncBand::Low => format!("{badge}↓"),
+                        SyncBand::High => format!("{badge} +"),
+                        SyncBand::Low => format!("{badge} -"),
                         SyncBand::Mid => badge,
                     }
                 })
@@ -248,7 +248,7 @@ fn battle_panel(
                 format!("{} (destroyed)", m.name)
             } else if stressed {
                 format!(
-                    "{} {}  ({},{})  {:.0}/{:.0}  MP{}{}{}  ⚠",
+                    "{} {}  ({},{})  {:.0}/{:.0}  MP{}{}{}  !",
                     m.name,
                     m.facing.label(),
                     m.position.x,
@@ -282,7 +282,7 @@ fn battle_panel(
                         AtFieldHudState::Ready { .. } => NERV_CYAN,
                         AtFieldHudState::Shattered { .. } => egui::Color32::from_rgb(160, 170, 190),
                     };
-                    cols[0].colored_label(color, state.detail_line());
+                    paint_at_status(&mut cols[0], state, color);
                 }
                 if let Some(pid) = m.pilot_id {
                     if let Some(p) = mission.pilot(pid) {
@@ -326,7 +326,7 @@ fn battle_panel(
                         if p.pending_refuse {
                             cols[0].colored_label(
                                 egui::Color32::from_rgb(255, 170, 70),
-                                "⚠ stressed — may refuse next order",
+                                "! stressed — may refuse next order",
                             );
                         }
                         match p.sync_band() {
@@ -334,7 +334,7 @@ fn battle_panel(
                                 cols[0].colored_label(
                                     NERV_CYAN,
                                     format!(
-                                        "⚡ high sync — strikes ×{:.2}, crit window, sees Angel cores",
+                                        "HIGH SYNC — strikes ×{:.2}, crit window, sees Angel cores",
                                         p.sync_damage_mult()
                                     ),
                                 );
@@ -415,7 +415,7 @@ fn battle_panel(
                         AtFieldHudState::Ready { .. } => NERV_CYAN,
                         AtFieldHudState::Shattered { .. } => egui::Color32::from_rgb(180, 140, 160),
                     };
-                    cols[1].colored_label(color, state.detail_line());
+                    paint_at_status(&mut cols[1], state, color);
                 }
             }
             if selected && !m.destroyed && m.alien.is_some() {
@@ -549,6 +549,35 @@ fn battle_panel(
         });
 
     requested
+}
+
+
+/// AT Field charge pips drawn as shapes (egui's default font has no ● / ○).
+fn paint_at_status(ui: &mut egui::Ui, state: AtFieldHudState, color: egui::Color32) {
+    let (filled, slots) = match state {
+        AtFieldHudState::Ready { charges, max } => (charges, max.max(1)),
+        AtFieldHudState::Shattered { .. } => (0, 1),
+    };
+    ui.horizontal(|ui| {
+        let desired = egui::vec2(slots as f32 * 12.0 + 2.0, 12.0);
+        let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
+        let painter = ui.painter_at(rect);
+        for i in 0..slots {
+            let x = rect.left() + i as f32 * 12.0;
+            let r = egui::Rect::from_min_size(egui::pos2(x, rect.top() + 1.0), egui::vec2(10.0, 10.0));
+            if i < filled {
+                painter.rect_filled(r, 1.5, color);
+            } else {
+                painter.rect_stroke(
+                    r,
+                    1.5,
+                    egui::Stroke::new(1.0_f32, color),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
+        ui.colored_label(color, state.detail_line());
+    });
 }
 
 /// Glanceable sync ratio bar + % badge (color ramp matches SyncBand thresholds).

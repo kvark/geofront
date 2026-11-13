@@ -45,10 +45,10 @@ impl PilotHudFlash {
     /// Compact caption for the HUD strip.
     pub fn caption(&self) -> &'static str {
         match self.kind {
-            PilotDramaKind::StressSpike => "⚠ PILOT STRESS SPIKE",
-            PilotDramaKind::Refuse => "⛔ ORDER REFUSED",
-            PilotDramaKind::Steady => "✓ PILOT STEADIED",
-            PilotDramaKind::CoreSight => "✦ PATTERN SIGHT",
+            PilotDramaKind::StressSpike => "! PILOT STRESS SPIKE",
+            PilotDramaKind::Refuse => "ORDER REFUSED",
+            PilotDramaKind::Steady => "PILOT STEADIED",
+            PilotDramaKind::CoreSight => "PATTERN SIGHT",
         }
     }
 }

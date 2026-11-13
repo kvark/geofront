@@ -1835,7 +1835,7 @@ mod tests {
             "expected Eva-flavored refuse line, got {refuse}"
         );
         let flash = m.pilot_flash.as_ref().expect("flash");
-        assert_eq!(flash.caption(), "⛔ ORDER REFUSED");
+        assert_eq!(flash.caption(), "ORDER REFUSED");
         assert!(flash.line.contains("refuses the attack"));
         assert!(!flash.dialog.is_empty());
         assert_eq!(flash.pilot_id, 0);
