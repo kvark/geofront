@@ -206,6 +206,8 @@ struct Game {
     /// Seconds waited at start for asset cooks / first Idle bind.
     autoplay_warmup: f32,
     autoplay_done: bool,
+    /// H / F1 toggles the camera/debug help block on the NERV HUD.
+    show_help: bool,
 }
 
 impl Drop for Game {
@@ -296,9 +298,10 @@ impl Game {
             },
         );
 
-        // Tokyo-3 dusk battle: low warm key, purple ambient fill, contact
-        // shadows on (Blade skinned-receiver bias). Anime street mood —
-        // sodium/neon locals + fog/rim live in raster.wgsl / Arena lights.
+        // Tokyo-3 dusk grade: low warm key, tight indigo fill, contact
+        // shadows on (Blade skinned-receiver bias). Warmer street lamps and
+        // midtone contrast live in raster.wgsl / Arena lights — key is
+        // slightly less hot so Reinhard does not wash the canyon.
         engine.set_raster_config(blade_render::RasterConfig {
             clear_color: blade_graphics::TextureColor::OpaqueBlack,
             // Lower evening sun, more grazing for long canyon shadows.
@@ -307,18 +310,18 @@ impl Game {
                 y: 0.22,
                 z: 0.12,
             },
-            // Hot dusk key — Quaternius albedo (~0.2–0.35) stays readable
-            // under Reinhard while asphalt stays dark for neon pop.
+            // Warm dusk key — enough for Quaternius albedo, not so hot that
+            // midtones flatten after tone-map.
             light_color: mint::Vector3 {
-                x: 10.5,
-                y: 4.6,
-                z: 1.55,
+                x: 8.6,
+                y: 3.15,
+                z: 0.92,
             },
-            // Cool indigo fill (low so sodium + neon carry the street).
+            // Tight indigo fill so sodium + neon carry the street.
             ambient_color: mint::Vector3 {
-                x: 0.10,
-                y: 0.09,
-                z: 0.18,
+                x: 0.055,
+                y: 0.05,
+                z: 0.12,
             },
             space_sky: false,
             // Tight ortho around the 8×8 plaza; dual receiver bias from
@@ -388,6 +391,7 @@ impl Game {
             autoplay_wait: 0.0,
             autoplay_warmup: 2.5,
             autoplay_done: false,
+            show_help: false,
         }
     }
 
@@ -401,6 +405,7 @@ impl Game {
             KeyQ => self.keys.q = down,
             KeyE => self.keys.e = down,
             ShiftLeft | ShiftRight => self.keys.shift = down,
+            KeyH | F1 if down => self.show_help = !self.show_help,
             _ => {}
         }
     }
@@ -702,7 +707,15 @@ impl Game {
             egui::SidePanel::right("hud")
                 .exact_width(360.0)
                 .resizable(false)
-                .frame(egui::Frame::side_top_panel(&egui_ctx.style()).inner_margin(10.0))
+                .frame(
+                    egui::Frame::new()
+                        .fill(egui::Color32::from_rgb(8, 10, 14))
+                        .inner_margin(12.0)
+                        .stroke(egui::Stroke::new(
+                            1.0_f32,
+                            egui::Color32::from_rgb(232, 120, 32),
+                        )),
+                )
                 .show(egui_ctx, |ui| {
                     hud_action = ui::side_hud(
                         ui,
@@ -711,6 +724,7 @@ impl Game {
                         &mut self.selected_player,
                         &mut self.selected_enemy,
                         &mut self.selected_limb,
+                        &mut self.show_help,
                     );
                 });
         });

@@ -1,11 +1,21 @@
-//! egui screens: battle HUD, city overview controls, mode switching.
+//! egui screens: NERV-style battle HUD, city overview, mode switching.
 
 use crate::characters::{PilotDramaKind, portrait_initials, portrait_rgb};
 use crate::combat::{Mission, TurnPhase};
 use crate::render::ViewMode;
 use crate::units::{AtFieldHudState, Facing, LimbKind, SyncBand, Team};
 
+const NERV_ORANGE: egui::Color32 = egui::Color32::from_rgb(232, 120, 32);
+const NERV_AMBER: egui::Color32 = egui::Color32::from_rgb(255, 196, 110);
+const NERV_DIM: egui::Color32 = egui::Color32::from_rgb(120, 128, 138);
+const NERV_LINE: egui::Color32 = egui::Color32::from_rgb(58, 36, 18);
+const NERV_CYAN: egui::Color32 = egui::Color32::from_rgb(100, 210, 255);
+const NERV_GREEN: egui::Color32 = egui::Color32::from_rgb(150, 220, 165);
+const NERV_RED: egui::Color32 = egui::Color32::from_rgb(255, 96, 90);
+const NERV_YELLOW: egui::Color32 = egui::Color32::from_rgb(240, 200, 80);
+
 /// Draws the side-panel HUD and returns any action the player requested.
+/// Help / camera debug copy is hidden unless `show_help` is set (H or F1).
 pub fn side_hud(
     ui: &mut egui::Ui,
     mission: &Mission,
@@ -13,36 +23,92 @@ pub fn side_hud(
     selected_player: &mut u32,
     selected_enemy: &mut u32,
     selected_limb: &mut LimbKind,
+    show_help: &mut bool,
 ) -> Option<HudAction> {
     let mut requested = None;
 
-    ui.heading("Geofront");
-    ui.label(match view_mode {
-        ViewMode::Battle => "Close-up street combat",
-        ViewMode::CitySurface => "Surface city overview",
-        ViewMode::CityUnderground => "Underground facility overview",
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("NERV")
+                .strong()
+                .color(NERV_ORANGE)
+                .size(16.0),
+        );
+        ui.label(egui::RichText::new("·").color(NERV_DIM));
+        ui.label(
+            egui::RichText::new("GEOFRONT")
+                .strong()
+                .color(NERV_AMBER)
+                .size(16.0),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let help_label = if *show_help { "H · hide" } else { "H · help" };
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new(help_label).small().color(NERV_DIM))
+                        .fill(egui::Color32::from_rgb(18, 20, 26))
+                        .stroke(egui::Stroke::new(1.0_f32, NERV_LINE)),
+                )
+                .on_hover_text("Toggle camera and debug help (H or F1)")
+                .clicked()
+            {
+                *show_help = !*show_help;
+            }
+        });
     });
-    ui.separator();
+    ui.label(
+        egui::RichText::new(match view_mode {
+            ViewMode::Battle => "MAGI // TACTICAL  —  STREET COMBAT",
+            ViewMode::CitySurface => "MAGI // TACTICAL  —  SURFACE OVERVIEW",
+            ViewMode::CityUnderground => "MAGI // TACTICAL  —  GEOFRONT FACILITY",
+        })
+        .small()
+        .color(NERV_DIM),
+    );
+    rule(ui);
 
     ui.horizontal(|ui| {
-        ui.label("View:");
         for mode in [
             ViewMode::Battle,
             ViewMode::CitySurface,
             ViewMode::CityUnderground,
         ] {
-            if ui
-                .selectable_label(view_mode == mode, mode.label())
-                .clicked()
-            {
+            let on = view_mode == mode;
+            let text = egui::RichText::new(mode.label()).small().color(if on {
+                NERV_AMBER
+            } else {
+                NERV_DIM
+            });
+            if ui.selectable_label(on, text).clicked() {
                 requested = Some(HudAction::SetView(mode));
             }
         }
     });
-    ui.separator();
 
-    ui.label("WASD move  ·  drag to look  ·  Q/E height  ·  Shift sprint  ·  wheel dolly");
-    ui.separator();
+    if *show_help {
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(
+                "WASD move  ·  drag to look  ·  Q/E height  ·  Shift sprint  ·  wheel dolly",
+            )
+            .small()
+            .color(NERV_DIM),
+        );
+        if matches!(
+            view_mode,
+            ViewMode::CitySurface | ViewMode::CityUnderground
+        ) {
+            ui.label(
+                egui::RichText::new(
+                    "Click the city, then WASD / drag. View buttons switch surface, underground, and battle.",
+                )
+                .small()
+                .color(NERV_DIM),
+            );
+        }
+    }
+
+    rule(ui);
 
     match view_mode {
         ViewMode::Battle => {
@@ -55,11 +121,31 @@ pub fn side_hud(
             ));
         }
         ViewMode::CitySurface | ViewMode::CityUnderground => {
-            city_panel(ui, view_mode);
+            city_panel(ui, view_mode, *show_help);
         }
     }
 
     requested
+}
+
+fn rule(ui: &mut egui::Ui) {
+    ui.add_space(4.0);
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 1.0),
+        egui::Sense::hover(),
+    );
+    ui.painter()
+        .hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0_f32, NERV_LINE));
+    ui.add_space(4.0);
+}
+
+fn section_label(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .small()
+            .strong()
+            .color(NERV_ORANGE),
+    );
 }
 
 fn battle_panel(
@@ -72,40 +158,46 @@ fn battle_panel(
     let mut requested = None;
 
     ui.horizontal(|ui| {
-        ui.label(format!("Turn {}", mission.turn));
+        ui.label(
+            egui::RichText::new(format!("TURN {:02}", mission.turn))
+                .strong()
+                .color(NERV_AMBER),
+        );
         ui.separator();
-        let phase_text = match mission.phase {
-            TurnPhase::Player => "Your phase",
-            TurnPhase::Enemy => "Enemy phase",
+        let (phase_text, phase_color) = match mission.phase {
+            TurnPhase::Player => ("PHASE  PLAYER", NERV_GREEN),
+            TurnPhase::Enemy => ("PHASE  ENEMY", NERV_YELLOW),
         };
-        ui.label(phase_text);
+        ui.label(egui::RichText::new(phase_text).strong().color(phase_color));
         ui.separator();
         let city_color = if mission.city_hp > 60.0 {
-            egui::Color32::GREEN
+            NERV_GREEN
         } else if mission.city_hp > 30.0 {
-            egui::Color32::YELLOW
+            NERV_YELLOW
         } else {
-            egui::Color32::RED
+            NERV_RED
         };
-        ui.colored_label(
-            city_color,
-            format!("City protection: {:.0}%", mission.city_hp),
+        ui.label(
+            egui::RichText::new(format!("CITY  {:.0}%", mission.city_hp))
+                .strong()
+                .color(city_color),
         );
 
         if mission.is_won() {
-            ui.colored_label(egui::Color32::LIGHT_GREEN, "  VICTORY");
+            ui.label(egui::RichText::new("  VICTORY").strong().color(NERV_GREEN));
         } else if mission.is_lost() {
-            ui.colored_label(egui::Color32::LIGHT_RED, "  DEFEAT");
+            ui.label(egui::RichText::new("  DEFEAT").strong().color(NERV_RED));
         }
     });
 
     if let Some(flash) = &mission.pilot_flash {
         let color = match flash.kind {
             PilotDramaKind::StressSpike => egui::Color32::from_rgb(255, 170, 70),
-            PilotDramaKind::Refuse => egui::Color32::from_rgb(255, 90, 90),
-            PilotDramaKind::Steady => egui::Color32::from_rgb(140, 220, 160),
+            PilotDramaKind::Refuse => NERV_RED,
+            PilotDramaKind::Steady => NERV_GREEN,
             PilotDramaKind::CoreSight => egui::Color32::from_rgb(200, 170, 255),
         };
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
             let stressed = matches!(
                 flash.kind,
@@ -131,10 +223,10 @@ fn battle_panel(
         });
     }
 
-    ui.separator();
+    rule(ui);
 
     ui.columns(2, |cols| {
-        cols[0].heading("Player");
+        section_label(&mut cols[0], "UNIT");
         for m in mission.mechs.iter().filter(|m| m.team == Team::Player) {
             let selected = *selected_player == m.id;
             let (hp, max) = m.total_hp();
@@ -142,7 +234,7 @@ fn battle_panel(
             let stressed = pilot.map(|p| p.pending_refuse).unwrap_or(false);
             let sync_mark = pilot
                 .map(|p| {
-                    let badge = format!("  sync{}%", p.sync_percent());
+                    let badge = format!("  SYNC {}%", p.sync_percent());
                     match p.sync_band() {
                         SyncBand::High => format!("{badge}⚡"),
                         SyncBand::Low => format!("{badge}↓"),
@@ -187,7 +279,7 @@ fn battle_panel(
             if selected && !m.destroyed {
                 if let Some(state) = at_state {
                     let color = match state {
-                        AtFieldHudState::Ready { .. } => egui::Color32::from_rgb(100, 210, 255),
+                        AtFieldHudState::Ready { .. } => NERV_CYAN,
                         AtFieldHudState::Shattered { .. } => egui::Color32::from_rgb(160, 170, 190),
                     };
                     cols[0].colored_label(color, state.detail_line());
@@ -204,16 +296,25 @@ fn battle_panel(
                                 p.can_see_core(),
                             );
                             ui.vertical(|ui| {
-                                ui.label(format!("Pilot {}", p.name));
+                                ui.label(
+                                    egui::RichText::new(format!("Pilot {}", p.name)).color(NERV_AMBER),
+                                );
                                 paint_sync_bar(ui, p.sync, p.sync_band());
                                 ui.horizontal(|ui| {
-                                    ui.label(format!("loyalty {:.0}%", p.loyalty * 100.0));
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "loyalty {:.0}%",
+                                            p.loyalty * 100.0
+                                        ))
+                                        .small()
+                                        .color(NERV_DIM),
+                                    );
                                     let stress_color = if p.stress >= 0.6 {
-                                        egui::Color32::from_rgb(255, 90, 90)
+                                        NERV_RED
                                     } else if p.stress >= 0.3 {
-                                        egui::Color32::YELLOW
+                                        NERV_YELLOW
                                     } else {
-                                        egui::Color32::LIGHT_GREEN
+                                        NERV_GREEN
                                     };
                                     ui.colored_label(
                                         stress_color,
@@ -231,7 +332,7 @@ fn battle_panel(
                         match p.sync_band() {
                             SyncBand::High => {
                                 cols[0].colored_label(
-                                    egui::Color32::from_rgb(100, 220, 255),
+                                    NERV_CYAN,
                                     format!(
                                         "⚡ high sync — strikes ×{:.2}, crit window, sees Angel cores",
                                         p.sync_damage_mult()
@@ -252,13 +353,17 @@ fn battle_panel(
                     for limb in &m.limbs {
                         let ratio = limb.damage_ratio();
                         ui.horizontal(|ui| {
-                            ui.label(format!("{}", limb.kind));
+                            ui.label(
+                                egui::RichText::new(format!("{}", limb.kind))
+                                    .small()
+                                    .color(NERV_DIM),
+                            );
                             let color = if ratio > 0.6 {
-                                egui::Color32::GREEN
+                                NERV_GREEN
                             } else if ratio > 0.25 {
-                                egui::Color32::YELLOW
+                                NERV_YELLOW
                             } else {
-                                egui::Color32::RED
+                                NERV_RED
                             };
                             ui.colored_label(color, format!("{:.0}/{:.0}", limb.hp, limb.max_hp));
                         });
@@ -275,24 +380,30 @@ fn battle_panel(
             }
         }
 
-        cols[1].heading("Enemy");
+        section_label(&mut cols[1], "TARGET");
         for m in mission.mechs.iter().filter(|m| m.team == Team::Enemy) {
             let selected = *selected_enemy == m.id;
             let (hp, max) = m.total_hp();
             let at_state = m.at_field_hud_state();
             let at_mark = at_state.map(|s| s.list_mark()).unwrap_or_default();
+            let tag = match m.alien {
+                Some(crate::units::AlienKind::Splinter) => "  VIOLET",
+                Some(crate::units::AlienKind::Mass) => "  CRIMSON",
+                None => "",
+            };
             let label = if m.destroyed {
                 format!("{} (destroyed)", m.name)
             } else {
                 format!(
-                    "{} {}  ({},{})  {:.0}/{:.0}{}",
+                    "{} {}  ({},{})  {:.0}/{:.0}{}{}",
                     m.name,
                     m.facing.label(),
                     m.position.x,
                     m.position.y,
                     hp,
                     max,
-                    at_mark
+                    at_mark,
+                    tag
                 )
             };
             if cols[1].selectable_label(selected, label).clicked() && !m.destroyed {
@@ -301,7 +412,7 @@ fn battle_panel(
             if selected && !m.destroyed {
                 if let Some(state) = at_state {
                     let color = match state {
-                        AtFieldHudState::Ready { .. } => egui::Color32::from_rgb(100, 210, 255),
+                        AtFieldHudState::Ready { .. } => NERV_CYAN,
                         AtFieldHudState::Shattered { .. } => egui::Color32::from_rgb(180, 140, 160),
                     };
                     cols[1].colored_label(color, state.detail_line());
@@ -324,7 +435,8 @@ fn battle_panel(
         }
     });
 
-    ui.separator();
+    rule(ui);
+    section_label(ui, "ORDERS");
 
     let can_act =
         matches!(mission.phase, TurnPhase::Player) && !mission.is_won() && !mission.is_lost();
@@ -332,7 +444,6 @@ fn battle_panel(
     let can_move = can_act && mech.map(|m| m.can_move()).unwrap_or(false);
     let can_fire = can_act && mech.map(|m| m.can_act()).unwrap_or(false);
 
-    ui.label("Step (1 tile) / face");
     ui.horizontal(|ui| {
         let mut pick = None;
         let step = |ui: &mut egui::Ui, label: &str, dir: Facing, enabled: bool| {
@@ -357,7 +468,7 @@ fn battle_panel(
     });
 
     ui.horizontal(|ui| {
-        ui.label("Target limb:");
+        ui.label(egui::RichText::new("Target limb").small().color(NERV_DIM));
         for limb in [
             LimbKind::Torso,
             LimbKind::LeftArm,
@@ -402,8 +513,8 @@ fn battle_panel(
         }
     });
 
-    ui.separator();
-    ui.heading("Combat log");
+    rule(ui);
+    section_label(ui, "OPS LOG");
     egui::ScrollArea::vertical()
         .max_height(200.0)
         .stick_to_bottom(true)
@@ -419,7 +530,7 @@ fn battle_panel(
                 if at_shatter {
                     ui.colored_label(egui::Color32::from_rgb(180, 220, 255), line);
                 } else if at_recharge || at_absorb {
-                    ui.colored_label(egui::Color32::from_rgb(100, 210, 255), line);
+                    ui.colored_label(NERV_CYAN, line);
                 } else if drama {
                     let color = if line.contains("refuses the") {
                         egui::Color32::from_rgb(255, 120, 120)
@@ -432,7 +543,7 @@ fn battle_panel(
                     };
                     ui.colored_label(color, line);
                 } else {
-                    ui.label(line);
+                    ui.label(egui::RichText::new(line).color(egui::Color32::from_rgb(190, 196, 204)));
                 }
             }
         });
@@ -443,13 +554,13 @@ fn battle_panel(
 /// Glanceable sync ratio bar + % badge (color ramp matches SyncBand thresholds).
 fn paint_sync_bar(ui: &mut egui::Ui, sync: f32, band: SyncBand) {
     let fill = match band {
-        SyncBand::High => egui::Color32::from_rgb(100, 220, 255),
+        SyncBand::High => NERV_CYAN,
         SyncBand::Low => egui::Color32::from_rgb(255, 140, 70),
-        SyncBand::Mid => egui::Color32::from_rgb(140, 210, 150),
+        SyncBand::Mid => NERV_GREEN,
     };
     let pct = (sync * 100.0).round().clamp(0.0, 100.0) as u8;
     ui.horizontal(|ui| {
-        ui.colored_label(fill, format!("sync {pct}%"));
+        ui.colored_label(fill, format!("SYNC {pct}%"));
         let desired = egui::vec2(88.0, 10.0);
         let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
         let painter = ui.painter_at(rect);
@@ -462,7 +573,7 @@ fn paint_sync_bar(ui: &mut egui::Ui, sync: f32, band: SyncBand) {
             let x = rect.left() + rect.width() * t;
             painter.line_segment(
                 [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 90)),
+                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 90)),
             );
         }
     });
@@ -470,7 +581,6 @@ fn paint_sync_bar(ui: &mut egui::Ui, sync: f32, band: SyncBand) {
 
 /// Procedural pilot plaque: tinted silhouette + initials (no art packs).
 fn paint_pilot_portrait(
-
     ui: &mut egui::Ui,
     pilot_id: u32,
     name: &str,
@@ -494,7 +604,7 @@ fn paint_pilot_portrait(
     } else if stressed {
         egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(255, 120, 80))
     } else {
-        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(30, 30, 40))
+        egui::Stroke::new(1.0_f32, NERV_ORANGE)
     };
     painter.rect(
         rect,
@@ -527,22 +637,40 @@ fn paint_pilot_portrait(
     );
 }
 
-fn city_panel(ui: &mut egui::Ui, mode: ViewMode) {
-    ui.label(match mode {
-        ViewMode::CitySurface => {
-            "Kenney city block — commercial towers and industrial fringe.\n\
-             Switch to Battle for close-up combat in the street canyon."
-        }
-        ViewMode::CityUnderground => {
-            "Geofront hangar plus command, east/west wings, south airlock.\n\
-             Pieces abut on edges so floors no longer Z-fight."
-        }
-        ViewMode::Battle => "",
-    });
-    ui.separator();
+fn city_panel(ui: &mut egui::Ui, mode: ViewMode, show_help: bool) {
     ui.label(
-        "Click the city, then WASD / drag. View buttons switch surface, underground, and battle.",
+        egui::RichText::new(match mode {
+            ViewMode::CitySurface => "TOKYO-3  SURFACE BLOCK",
+            ViewMode::CityUnderground => "GEOFRONT  HANGAR / COMMAND",
+            ViewMode::Battle => "",
+        })
+        .strong()
+        .color(NERV_AMBER),
     );
+    if show_help {
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(match mode {
+                ViewMode::CitySurface => {
+                    "Kenney city block — commercial towers and industrial fringe.\n\
+                     Switch to Battle for close-up combat in the street canyon."
+                }
+                ViewMode::CityUnderground => {
+                    "Geofront hangar plus command, east/west wings, south airlock.\n\
+                     Pieces abut on edges so floors no longer Z-fight."
+                }
+                ViewMode::Battle => "",
+            })
+            .small()
+            .color(NERV_DIM),
+        );
+    } else {
+        ui.label(
+            egui::RichText::new("H or F1 — camera help and block notes")
+                .small()
+                .color(NERV_DIM),
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
