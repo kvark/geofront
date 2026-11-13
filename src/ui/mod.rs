@@ -324,14 +324,16 @@ fn battle_panel(
                             });
                         });
                         if p.pending_refuse {
-                            cols[0].colored_label(
+                            wrapped_label(
+                                &mut cols[0],
                                 egui::Color32::from_rgb(255, 170, 70),
                                 "! stressed — may refuse next order",
                             );
                         }
                         match p.sync_band() {
                             SyncBand::High => {
-                                cols[0].colored_label(
+                                wrapped_label(
+                                    &mut cols[0],
                                     NERV_CYAN,
                                     format!(
                                         "HIGH SYNC — strikes ×{:.2}, crit window, sees Angel cores",
@@ -340,7 +342,8 @@ fn battle_panel(
                                 );
                             }
                             SyncBand::Low => {
-                                cols[0].colored_label(
+                                wrapped_label(
+                                    &mut cols[0],
                                     egui::Color32::from_rgb(255, 140, 70),
                                     format!("sync frayed — strikes ×{:.2}", p.sync_damage_mult()),
                                 );
@@ -426,7 +429,8 @@ fn battle_panel(
                     .map(|p| p.can_see_core())
                     .unwrap_or(false);
                 if sees {
-                    cols[1].colored_label(
+                    wrapped_label(
+                        &mut cols[1],
                         egui::Color32::from_rgb(220, 190, 255),
                         "core visible — high sync core strike",
                     );
@@ -552,31 +556,45 @@ fn battle_panel(
 }
 
 
+/// Label that stays inside the current column (egui columns do not clip).
+fn wrapped_label(ui: &mut egui::Ui, color: egui::Color32, text: impl Into<String>) {
+    ui.add(
+        egui::Label::new(egui::RichText::new(text.into()).color(color)).wrap(),
+    );
+}
+
 /// AT Field charge pips drawn as shapes (egui's default font has no ● / ○).
+/// Pips and the detail line stack so the UNIT column never spills into TARGET.
 fn paint_at_status(ui: &mut egui::Ui, state: AtFieldHudState, color: egui::Color32) {
     let (filled, slots) = match state {
         AtFieldHudState::Ready { charges, max } => (charges, max.max(1)),
         AtFieldHudState::Shattered { .. } => (0, 1),
     };
-    ui.horizontal(|ui| {
-        let desired = egui::vec2(slots as f32 * 12.0 + 2.0, 12.0);
-        let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
-        let painter = ui.painter_at(rect);
-        for i in 0..slots {
-            let x = rect.left() + i as f32 * 12.0;
-            let r = egui::Rect::from_min_size(egui::pos2(x, rect.top() + 1.0), egui::vec2(10.0, 10.0));
-            if i < filled {
-                painter.rect_filled(r, 1.5, color);
-            } else {
-                painter.rect_stroke(
-                    r,
-                    1.5,
-                    egui::Stroke::new(1.0_f32, color),
-                    egui::StrokeKind::Inside,
+    ui.vertical(|ui| {
+        ui.set_max_width(ui.available_width());
+        ui.horizontal(|ui| {
+            let desired = egui::vec2(slots as f32 * 12.0 + 2.0, 12.0);
+            let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
+            let painter = ui.painter_at(rect);
+            for i in 0..slots {
+                let x = rect.left() + i as f32 * 12.0;
+                let r = egui::Rect::from_min_size(
+                    egui::pos2(x, rect.top() + 1.0),
+                    egui::vec2(10.0, 10.0),
                 );
+                if i < filled {
+                    painter.rect_filled(r, 1.5, color);
+                } else {
+                    painter.rect_stroke(
+                        r,
+                        1.5,
+                        egui::Stroke::new(1.0_f32, color),
+                        egui::StrokeKind::Inside,
+                    );
+                }
             }
-        }
-        ui.colored_label(color, state.detail_line());
+        });
+        wrapped_label(ui, color, state.detail_line());
     });
 }
 
