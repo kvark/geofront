@@ -176,6 +176,45 @@ impl Mission {
         }
     }
 
+    /// Check attacker/target eligibility and report (distance, range) in orthogonal steps.
+    /// Out-of-range targets still return distances for the HUD.
+    pub fn attack_distance(
+        &self,
+        attacker_id: u32,
+        target_id: u32,
+    ) -> Result<(i32, i32), &'static str> {
+        let attacker = self.mech(attacker_id).ok_or("Unknown attacker")?;
+        if !self.phase_allows(attacker.team) {
+            return Err("Not this team's turn");
+        }
+        if attacker.destroyed {
+            return Err("Attacker destroyed");
+        }
+        if !attacker.can_act() {
+            return Err("Already acted");
+        }
+        let target = self.mech(target_id).ok_or("Unknown target")?;
+        if target.destroyed {
+            return Err("Target already destroyed");
+        }
+        if attacker.team == target.team {
+            return Err("Cannot attack an ally");
+        }
+        Ok((
+            Grid::manhattan(attacker.position, target.position),
+            attacker.attack_range(),
+        ))
+    }
+
+    /// Validate an attack without spending the order or resolving pilot refusal.
+    pub fn attack_order(&self, attacker_id: u32, target_id: u32) -> Result<(), &'static str> {
+        let (distance, range) = self.attack_distance(attacker_id, target_id)?;
+        if distance > range {
+            return Err("Out of range");
+        }
+        Ok(())
+    }
+
     pub fn apply_action(&mut self, action: Action) -> Result<ApplyResult, String> {
         match action {
             Action::Move { unit_id, to } => {
@@ -240,48 +279,23 @@ impl Mission {
                 target_id,
                 limb,
             } => {
-                let team = self.team_of(attacker_id).ok_or("Unknown attacker")?;
-                if !self.phase_allows(team) {
-                    return Err("Not this team's turn".into());
-                }
-
-                let (attacker_pos, facing, firepower, name, range, destroyed, pilot_id) = {
-                    let a = self.mech(attacker_id).ok_or("Unknown attacker")?;
-                    (
-                        a.position,
-                        a.facing,
-                        a.firepower(),
-                        a.name.clone(),
-                        a.attack_range(),
-                        a.destroyed,
-                        a.pilot_id,
-                    )
-                };
-                if destroyed {
-                    return Err("Attacker destroyed".into());
-                }
-                {
-                    let a = self.mech(attacker_id).ok_or("Unknown attacker")?;
-                    if !a.can_act() {
-                        return Err("Already acted".into());
-                    }
-                }
+                self.attack_order(attacker_id, target_id)?;
+                let a = self.mech(attacker_id).ok_or("Unknown attacker")?;
+                let (team, attacker_pos, facing, firepower, name, pilot_id) = (
+                    a.team,
+                    a.position,
+                    a.facing,
+                    a.firepower(),
+                    a.name.clone(),
+                    a.pilot_id,
+                );
 
                 if matches!(team, Team::Player) && self.try_refuse(attacker_id, "attack") {
                     return Ok(ApplyResult::Skipped);
                 }
 
-                let (tpos, target_destroyed) = {
-                    let target = self.mech(target_id).ok_or("Unknown target")?;
-                    (target.position, target.destroyed)
-                };
-                if target_destroyed {
-                    return Err("Target already destroyed".into());
-                }
+                let tpos = self.mech(target_id).ok_or("Unknown target")?.position;
                 let dist = Grid::manhattan(attacker_pos, tpos);
-                if dist > range {
-                    return Err("Out of range".into());
-                }
                 let look = facing.delta();
                 let toward = IVec2::new(
                     (tpos.x - attacker_pos.x).signum(),
@@ -1042,6 +1056,47 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn invalid_attacks_do_not_spend_a_pending_pilot_response() {
+        let mut m = Mission::new_skirmish();
+        m.pilot_mut(0).unwrap().pending_refuse = true;
+        m.mech_mut(11).unwrap().position = IVec2::new(7, 7);
+        for (target_id, reason) in [
+            (11, "Out of range"),
+            (1, "Cannot attack an ally"),
+            (0, "Cannot attack an ally"),
+            (99, "Unknown target"),
+        ] {
+            assert_eq!(m.attack_order(0, target_id), Err(reason));
+            assert_eq!(
+                m.apply_action(Action::Attack {
+                    attacker_id: 0,
+                    target_id,
+                    limb: LimbKind::Torso,
+                }),
+                Err(reason.to_owned())
+            );
+            assert!(m.pilot(0).unwrap().pending_refuse);
+            assert!(m.mech(0).unwrap().can_act());
+        }
+
+        m.mech_mut(10).unwrap().destroyed = true;
+        assert_eq!(m.attack_order(0, 10), Err("Target already destroyed"));
+        assert!(m.pilot(0).unwrap().pending_refuse);
+        m.mech_mut(10).unwrap().destroyed = false;
+        assert_eq!(m.attack_order(0, 10), Ok(()));
+        assert!(
+            m.apply_action(Action::Attack {
+                attacker_id: 0,
+                target_id: 10,
+                limb: LimbKind::Torso,
+            })
+            .is_ok()
+        );
+        assert!(!m.pilot(0).unwrap().pending_refuse);
+        assert_eq!(m.attack_order(0, 10), Err("Already acted"));
     }
 
     #[test]

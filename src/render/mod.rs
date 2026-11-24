@@ -1515,28 +1515,28 @@ fn spawn_surface_roads(
             handles.push(h);
         }
     }
-    // Visual sodium fixtures (Kenney light-square is ~0.6m; scale up to street).
+    // Original low-profile relay fixtures keep nearby limbs and tile edges visible.
     for (i, &(x, z)) in SODIUM_CELLS.iter().enumerate() {
         let pos = cell_to_world(IVec2::new(x, z));
         let h = add_static(
             engine,
             format!("sodium-lamp-{i}"),
-            "models/roads/light-square.glb",
-            [pos.x, 0.0, pos.z],
-            4.6,
+            "models/geofront/relay-beacon.glb",
+            [pos.x, 0.02, pos.z],
+            1.3,
         );
         engine.set_color_tint(h, [3.0, 1.15, 0.18, 1.0]);
         handles.push(h);
     }
-    // Neon accent fixtures — same mesh, cool tint for anime night read.
+    // Neon accent fixtures share the model but read as a second lighting family.
     for (i, &(x, z, color)) in NEON_LIGHTS.iter().enumerate() {
         let pos = cell_to_world(IVec2::new(x, z));
         let h = add_static(
             engine,
             format!("neon-lamp-{i}"),
-            "models/roads/light-square.glb",
-            [pos.x, 0.05, pos.z],
-            3.8,
+            "models/geofront/relay-beacon.glb",
+            [pos.x, 0.02, pos.z],
+            1.05,
         );
         engine.set_color_tint(h, [color[0] * 2.8, color[1] * 2.8, color[2] * 2.8, 1.0]);
         handles.push(h);

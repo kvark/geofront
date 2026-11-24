@@ -489,9 +489,34 @@ fn battle_panel(
         }
     });
 
+    let attack_check = mission.attack_distance(*selected_player, *selected_enemy);
+    let attack_ready = can_act
+        && mission
+            .attack_order(*selected_player, *selected_enemy)
+            .is_ok();
+    if can_act {
+        let (report, color) = match attack_check {
+            Ok((distance, range)) if attack_ready => {
+                let charges = mission.mech(*selected_enemy).map_or(0, |m| m.at_field);
+                let effect = if charges > 0 {
+                    format!(" · AT FIELD ABSORBS HIT ({charges})")
+                } else {
+                    String::new()
+                };
+                (
+                    format!("TARGET IN RANGE · {distance}/{range}{effect}"),
+                    NERV_GREEN,
+                )
+            }
+            Ok((distance, range)) => (format!("OUT OF RANGE · {distance}/{range}"), NERV_YELLOW),
+            Err(reason) => (reason.to_owned(), NERV_DIM),
+        };
+        ui.label(egui::RichText::new(report).small().color(color));
+    }
+
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(can_fire, egui::Button::new("Attack"))
+            .add_enabled(attack_ready, egui::Button::new("Attack"))
             .clicked()
         {
             requested = Some(HudAction::Attack {
