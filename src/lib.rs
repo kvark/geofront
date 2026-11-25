@@ -237,6 +237,10 @@ fn dusk_raster_config(battle: bool) -> blade_render::RasterConfig {
 
 struct QuitEvent;
 
+/// Autoplay (lavapipe smoke) plays animations and turn pacing this much
+/// faster than real time. Combat resolution is unchanged.
+const AUTOPLAY_TIME_SCALE: f32 = 1.6;
+
 struct Game {
     engine: blade_engine::Engine,
     window: Window,
@@ -620,7 +624,16 @@ impl Game {
     /// Returns true when a timed capture/quit should end the process.
     fn on_draw(&mut self) -> bool {
         let now = time::Instant::now();
-        let dt = (now - self.last_redraw).as_secs_f32().min(0.05);
+        let raw_dt = (now - self.last_redraw).as_secs_f32();
+        // Interactive play clamps dt so a hitch never skips an animation. The
+        // lavapipe smoke runs at a few fps, where that clamp made game time
+        // crawl behind wall time; autoplay keeps up with the wall clock and
+        // plays at 1.6x (presentation pacing only, same combat resolution).
+        let dt = if self.autoplay {
+            raw_dt.min(0.25) * AUTOPLAY_TIME_SCALE
+        } else {
+            raw_dt.min(0.05)
+        };
         self.last_redraw = now;
         if let Some(limit) = self.quit_after {
             if now.duration_since(self.started_at).as_secs_f32() >= limit {
@@ -816,9 +829,9 @@ impl Game {
                 } else {
                     info!("AUTOPLAY: DEFEAT on turn {}", self.mission.turn);
                 }
-                if self.quit_after.is_none() {
-                    self.quit_after = Some(self.started_at.elapsed().as_secs_f32() + 2.0);
-                }
+                // Quit shortly after the verdict; the autoplay floor is only a cap.
+                let soon = self.started_at.elapsed().as_secs_f32() + 2.0;
+                self.quit_after = Some(self.quit_after.map_or(soon, |t| t.min(soon)));
             }
             return;
         }
