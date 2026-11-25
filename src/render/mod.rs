@@ -1751,14 +1751,18 @@ fn mech_scale(mech: &Mech) -> f32 {
     }
 }
 
+/// color_tint alpha marking an Angel for the shader overlay.
+const ANGEL_TAG: f32 = 0.5;
+
 fn mech_tint(mech: &Mech, pulse: f32) -> [f32; 4] {
     // Chromatic team colors at moderate gain. Quaternius pale albedo plus
     // a 0.14 gray emissive (untinted by Blade) and a hot dusk key were
     // Reinhard-crushing steel-blue / violet / crimson toward white.
     // Peaks stay under ~1.7; the shader now tints emissive to match.
     match mech.alien {
-        Some(AlienKind::Mass) => [1.65 * pulse, 0.12 * pulse, 0.10 * pulse, 1.0],
-        Some(AlienKind::Splinter) => [0.95 * pulse, 0.22 * pulse, 1.70 * pulse, 1.0],
+        // Alpha 0.5 tags Angels for raster.wgsl (light outline, not ink).
+        Some(AlienKind::Mass) => [1.65 * pulse, 0.12 * pulse, 0.10 * pulse, ANGEL_TAG],
+        Some(AlienKind::Splinter) => [0.95 * pulse, 0.22 * pulse, 1.70 * pulse, ANGEL_TAG],
         None => match mech.team {
             Team::Player => [0.20 * pulse, 0.48 * pulse, 1.15 * pulse, 1.0],
             Team::Enemy => [1.42 * pulse, 0.28, 0.16, 1.0],
@@ -2179,6 +2183,11 @@ mod tests {
         assert!(player[2] > player[0] + 0.4);
         assert!(splinter[2] > splinter[1] + 0.8);
         assert!(mass[0] > mass[2] + 0.8);
+        // Alpha tags Angels (light outline in raster.wgsl); mechs keep 1.0.
+        assert_eq!(
+            (splinter[3], mass[3], player[3]),
+            (ANGEL_TAG, ANGEL_TAG, 1.0)
+        );
         // Moderate gain — values well above 1 still Reinhard toward grey.
         for tint in [player, splinter, mass] {
             assert!(tint[0].max(tint[1]).max(tint[2]) < 2.5);

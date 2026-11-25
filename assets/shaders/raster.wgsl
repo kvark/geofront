@@ -85,6 +85,14 @@ fn is_outline_hull(model: mat4x4<f32>) -> bool {
     return determinant(mat3x3<f32>(model[0].xyz, model[1].xyz, model[2].xyz)) < 0.0;
 }
 
+// Geofront tags Angels with color_tint alpha 0.5 (alpha is otherwise unused:
+// the raster pass is opaque). Angels get a light AT-glow line instead of ink
+// so a violet silhouette still separates from a dark canyon wall.
+fn is_angel() -> bool {
+    let a = draw_params.base_color_factor.a;
+    return a > 0.3 && a < 0.7;
+}
+
 // Outline hulls cast no shadow: park them outside the clip volume.
 const CULLED_POS: vec4<f32> = vec4<f32>(2.0, 2.0, 2.0, 1.0);
 
@@ -135,7 +143,7 @@ fn raster_vertex(
         let n_world = normalize((draw_params.model * vec4<f32>(-normal, 0.0)).xyz);
         let base = draw_params.model * vec4<f32>(-position, 1.0);
         let w = (frame_params.view_proj * base).w;
-        let width = clamp(w * 0.0042, 0.02, 0.14);
+        let width = clamp(w * 0.0042, 0.02, 0.14) * select(1.0, 1.35, is_angel());
         let away = normalize(base.xyz - frame_params.camera_pos.xyz);
         // Units are thin and close: a push would sink their ink into the body.
         let push = select(0.05 + w * 0.004, 0.0, skinned);
@@ -311,7 +319,10 @@ fn raster_fs(input: VertexOutput, @builtin(front_facing) front_facing: bool) -> 
         let ink_dist = length(frame_params.camera_pos.xyz - input.world_pos);
         let ink_fog = 1.0 - exp(-max(ink_dist - 14.0, 0.0) * 0.018);
         let ink = mix(vec3<f32>(0.018, 0.012, 0.03), vec3<f32>(0.33, 0.13, 0.06), clamp(ink_fog * 2.0, 0.0, 0.6));
-        let ink_mapped = ink / (ink + vec3<f32>(1.0));
+        // Angels: pale lilac-orange glow line (pre-Reinhard), not ink.
+        let glow = vec3<f32>(2.6, 1.5, 2.2);
+        let line = select(ink, glow, is_angel());
+        let ink_mapped = line / (line + vec3<f32>(1.0));
         return vec4<f32>(encode_surface_color(ink_mapped, frame_params.settings.y > 0.5), 1.0);
     }
     let mr_sample = textureSample(metallic_roughness_tex, samp, input.uv);
@@ -385,7 +396,15 @@ fn raster_fs(input: VertexOutput, @builtin(front_facing) front_facing: bool) -> 
     // Cel rim: a flat band on mechs/Angels only (kind 1); boxy façades would
     // light whole grazing walls with a hard step.
     let is_unit = step(0.5, input.kind) * (1.0 - step(1.5, input.kind));
-    let rim = mix(0.5 * pow(1.0 - ndotv, 2.6), 0.2 * cel_step(0.8, 1.0 - ndotv), is_unit);
+    // Façade rim off on raised ledge tops/soffits: seen edge-on from the
+    // street it drew pale streaks along every floor line. The street and the
+    // surface overview's rooftops keep it.
+    let ledge = smoothstep(0.3, 0.7, abs(n.y)) * smoothstep(0.3, 0.8, input.world_pos.y)
+        * smoothstep(14.0, 5.0, frame_params.camera_pos.y);
+    let wall_rim = 0.5 * pow(1.0 - ndotv, 2.6) * (1.0 - ledge);
+    // Angels get a wider flat band so their body edge also lifts off dark walls.
+    let unit_rim = select(0.2 * cel_step(0.8, 1.0 - ndotv), 0.45 * cel_step(0.62, 1.0 - ndotv), is_angel());
+    let rim = mix(wall_rim, unit_rim, is_unit);
     let street = smoothstep(5.0, 1.6, input.world_pos.y);
     // 1 in the battle street camera (~3m), ~0 from the surface overview (~18m).
     let cam_low = smoothstep(14.0, 5.0, frame_params.camera_pos.y);
