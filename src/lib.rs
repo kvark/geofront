@@ -380,8 +380,10 @@ impl Game {
         let mission = Mission::new_skirmish();
         let view_mode = initial_view_mode();
         let autoplay = std::env::var_os("GEOFRONT_AUTOPLAY").is_some();
-        // Denser Tokyo-3 scenes need ~180–200s under lavapipe; CI may still pass
-        // QUIT_AFTER=120 until workflow OAuth can bump smoke.yml.
+        // Denser Tokyo-3 scenes need ~150s under lavapipe on a fast runner and
+        // >200s on the slower GitHub hosts (main 90d35b2 hit the 200s quit
+        // before VICTORY). CI still passes QUIT_AFTER=120 until workflow OAuth can
+        // bump smoke.yml; its step timeout is 8 min, so floor at 360s.
         let mut quit_after = std::env::var("GEOFRONT_QUIT_AFTER")
             .ok()
             .and_then(|s| s.parse::<f32>().ok())
@@ -391,7 +393,7 @@ impl Game {
                     .map(|_| 8.0_f32)
             });
         if autoplay {
-            let floor = 200.0_f32;
+            let floor = 360.0_f32;
             quit_after = Some(quit_after.map(|t| f32::max(t, floor)).unwrap_or(floor));
         }
 
