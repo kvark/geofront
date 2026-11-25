@@ -60,6 +60,8 @@ struct VertexOutput {
     @location(2) tangent: vec3<f32>,
     @location(3) bitangent: vec3<f32>,
     @location(4) uv: vec2<f32>,
+    // G1 cel: 0 rigid, 1 skinned (mech / Angel), 2 inverted-hull outline.
+    @location(5) @interpolate(flat) kind: f32,
 }
 
 var<uniform> frame_params: RasterFrameParams;
@@ -77,14 +79,29 @@ var shadow_tex: texture_depth_2d;
 var<uniform> shadow_frame_params: ShadowFrameParams;
 var<uniform> shadow_draw_params: ShadowDrawParams;
 
+// Geofront spawns each outlined visual twice; the copy has a negative scale,
+// i.e. a mirrored (det < 0) model matrix. That is the inverted-hull flag.
+fn is_outline_hull(model: mat4x4<f32>) -> bool {
+    return determinant(mat3x3<f32>(model[0].xyz, model[1].xyz, model[2].xyz)) < 0.0;
+}
+
+// Outline hulls cast no shadow: park them outside the clip volume.
+const CULLED_POS: vec4<f32> = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+
 @vertex
 fn raster_shadow_vs(input: Vertex) -> @builtin(position) vec4<f32> {
+    if (is_outline_hull(shadow_draw_params.model)) {
+        return CULLED_POS;
+    }
     let world = shadow_draw_params.model * vec4<f32>(input.position, 1.0);
     return shadow_frame_params.light_view_proj * world;
 }
 
 @vertex
 fn raster_shadow_skinned_vs(input: Vertex, skin_input: SkinVertex) -> @builtin(position) vec4<f32> {
+    if (is_outline_hull(shadow_draw_params.model)) {
+        return CULLED_POS;
+    }
     let skinned = apply_affine(skin_blend(skin_input), input.position);
     let world = shadow_draw_params.model * vec4<f32>(skinned, 1.0);
     return shadow_frame_params.light_view_proj * world;
@@ -104,9 +121,27 @@ fn raster_vertex(
     normal: vec3<f32>,
     tangent: vec3<f32>,
     bitangent_sign: f32,
+    skinned: bool,
 ) -> VertexOutput {
     var out: VertexOutput;
-    let pos_world = draw_params.model * vec4<f32>(position, 1.0);
+    var pos_world = draw_params.model * vec4<f32>(position, 1.0);
+    out.kind = select(0.0, 1.0, skinned);
+    if (is_outline_hull(draw_params.model)) {
+        // Un-mirror (M * -p == the base visual), then extrude along the
+        // world normal by a near-constant screen width: ~0.0042 rad is
+        // about 3 px at 720p. Clamp so close-ups stay inked, not slabbed.
+        // Pushing the hull away from the camera hides it inside ledges and
+        // window insets, so ink lands on silhouettes and big depth steps.
+        let n_world = normalize((draw_params.model * vec4<f32>(-normal, 0.0)).xyz);
+        let base = draw_params.model * vec4<f32>(-position, 1.0);
+        let w = (frame_params.view_proj * base).w;
+        let width = clamp(w * 0.0042, 0.02, 0.14);
+        let away = normalize(base.xyz - frame_params.camera_pos.xyz);
+        // Units are thin and close: a push would sink their ink into the body.
+        let push = select(0.05 + w * 0.004, 0.0, skinned);
+        pos_world = vec4<f32>(base.xyz + n_world * width + away * push, 1.0);
+        out.kind = 2.0;
+    }
     out.clip_pos = frame_params.view_proj * pos_world;
     out.world_pos = pos_world.xyz;
     // GLES 3.00 requires matching uniform blocks in vs+fs. The multiply is
@@ -130,6 +165,7 @@ fn raster_vs(input: Vertex) -> VertexOutput {
         decode_normal(input.normal),
         decode_normal(input.tangent),
         input.bitangent_sign,
+        false,
     );
 }
 
@@ -143,6 +179,7 @@ fn raster_skinned_vs(input: Vertex, skin_input: SkinVertex) -> VertexOutput {
         linear * decode_normal(input.normal),
         linear * decode_normal(input.tangent),
         input.bitangent_sign * sign(determinant(linear)),
+        true,
     );
 }
 
@@ -200,17 +237,23 @@ fn angular_attenuation(light: LocalLight, direction_to_light: vec3<f32>) -> f32 
     return pow(blend, light.spot.z);
 }
 
-fn shade_local_light(mat: Material, n: vec3<f32>, v: vec3<f32>, world_pos: vec3<f32>) -> vec3<f32> {
+struct LocalShade {
+    // Demodulated diffuse irradiance (times albedo later), and specular.
+    diffuse: vec3<f32>,
+    specular: vec3<f32>,
+}
+
+fn shade_local_light(mat: Material, n: vec3<f32>, v: vec3<f32>, world_pos: vec3<f32>) -> LocalShade {
+    var out = LocalShade(vec3<f32>(0.0), vec3<f32>(0.0));
     let count = min(u32(light_params.count_seed.x), MAX_LOCAL_LIGHTS);
     if (count == 0u) {
-        return vec3<f32>(0.0);
+        return out;
     }
 
     // Deterministic sum of every submitted local light. Blade's stock path uses
     // a 1-light spatial reservoir (hash31 on world_pos) that shows up as
     // dithered grain on lavapipe façades, asphalt, and mech plates. Geofront
     // stays under MAX_LOCAL_LIGHTS=8, so a full loop is cheap and stable.
-    var acc = vec3<f32>(0.0);
     for (var i = 0u; i < MAX_LOCAL_LIGHTS; i++) {
         if (i >= count) {
             break;
@@ -227,13 +270,50 @@ fn shade_local_light(mat: Material, n: vec3<f32>, v: vec3<f32>, world_pos: vec3<
         let ldir = delta / dist;
         let brdf = evaluate_brdf(mat, n, v, ldir);
         let atten = angular_attenuation(light, ldir) * falloff * falloff / dist2;
-        acc += (mat.diffuse_albedo * brdf.diffuse + brdf.specular) * light.intensity.xyz * atten;
+        let radiance = light.intensity.xyz * atten;
+        out.diffuse += brdf.diffuse * radiance;
+        out.specular += brdf.specular * radiance;
     }
-    return acc;
+    return out;
+}
+
+// Anti-aliased hard step: one-pixel-wide band edge, no smooth falloff.
+fn cel_step(edge: f32, x: f32) -> f32 {
+    let w = max(fwidth(x), 1e-4);
+    return clamp((x - edge) / w + 0.5, 0.0, 1.0);
+}
+
+// G1 key ramp, 3 flat bands: shadow (ambient only), half-tone, lit.
+fn cel_key(x: f32) -> f32 {
+    return 0.5 * cel_step(0.06, x) + 0.5 * cel_step(0.42, x);
+}
+
+// Posterize local-light irradiance by luminance, keeping its hue: the
+// sodium pools become flat discs with a hot core instead of soft blobs.
+fn cel_local(e: vec3<f32>) -> vec3<f32> {
+    let l = compute_luminocity(e);
+    let hue = e / max(l, 1e-4);
+    let level = 0.2 * cel_step(0.14, l) + 0.35 * cel_step(0.3, l) + 0.9 * cel_step(1.1, l);
+    return hue * level;
 }
 
 @fragment
-fn raster_fs(input: VertexOutput) -> @location(0) vec4<f32> {
+fn raster_fs(input: VertexOutput, @builtin(front_facing) front_facing: bool) -> @location(0) vec4<f32> {
+    // Inverted-hull ink, first and cheap (no textures, lights or shadow
+    // taps): only the hull's back faces survive, so ink shows just outside
+    // silhouettes and at depth steps between parts. Far ink sinks into the
+    // dusk haze so the skyline does not go black-on-black. The branch is on
+    // a uniform, so the derivatives below stay in uniform control flow.
+    if (is_outline_hull(draw_params.model)) {
+        if (front_facing) {
+            discard;
+        }
+        let ink_dist = length(frame_params.camera_pos.xyz - input.world_pos);
+        let ink_fog = 1.0 - exp(-max(ink_dist - 14.0, 0.0) * 0.018);
+        let ink = mix(vec3<f32>(0.018, 0.012, 0.03), vec3<f32>(0.33, 0.13, 0.06), clamp(ink_fog * 2.0, 0.0, 0.6));
+        let ink_mapped = ink / (ink + vec3<f32>(1.0));
+        return vec4<f32>(encode_surface_color(ink_mapped, frame_params.settings.y > 0.5), 1.0);
+    }
     let mr_sample = textureSample(metallic_roughness_tex, samp, input.uv);
     var base_color = textureSample(base_color_tex, samp, input.uv).rgb * draw_params.base_color_factor.rgb;
 
@@ -275,22 +355,37 @@ fn raster_fs(input: VertexOutput) -> @location(0) vec4<f32> {
     let v = normalize(frame_params.camera_pos.xyz - input.world_pos);
     let l = normalize(frame_params.light_dir.xyz);
 
+    // G1 cel key: flat shadow (hard PCF threshold) x Lambert, quantized to
+    // three bands. Peak matches the old Lambert lobe at ~60° so overall
+    // exposure stays where #29/#30 graded it.
     let brdf = evaluate_brdf(mat, n, v, l);
-    let visibility = directional_shadow(input.world_pos, n);
-    let light = (mat.diffuse_albedo * brdf.diffuse + brdf.specular) * frame_params.light_color.xyz * visibility;
-    let ambient = evaluate_ambient(mat) * frame_params.ambient_color.xyz;
+    let shadow_hard = cel_step(0.5, directional_shadow(input.world_pos, n));
+    let ndotl = max(dot(n, l), 0.0);
+    let key = cel_key(ndotl * shadow_hard) * 0.62 / PI;
+    // Toon specular: one flat highlight shape, no GGX tail.
+    let spec_l = compute_luminocity(brdf.specular);
+    let spec = brdf.specular / max(spec_l, 1e-4) * cel_step(0.35, spec_l * shadow_hard) * 0.35;
+    let light = (mat.diffuse_albedo * key + spec) * frame_params.light_color.xyz;
+    // Shadow band leans cool violet (anime dusk), not neutral gray.
+    let ambient = evaluate_ambient(mat) * frame_params.ambient_color.xyz * vec3<f32>(0.92, 0.9, 1.12);
     // Quaternius mechs ship base_color_factor=1.45 and a flat 0.14 gray
     // emissive. Blade multiplies color_tint into base_color only, so that
     // gray emissive was a white floor under pale plates and a gray haze
     // on shadowed Angels — team colors died in the Reinhard midtones.
     var emissive = draw_params.emissive_factor.rgb * textureSample(emissive_tex, samp, input.uv).rgb;
     emissive *= draw_params.base_color_factor.rgb;
-    let local = shade_local_light(mat, n, v, input.world_pos);
+    let local_raw = shade_local_light(mat, n, v, input.world_pos);
+    let local_spec_l = compute_luminocity(local_raw.specular);
+    let local = mat.diffuse_albedo * cel_local(local_raw.diffuse)
+        + local_raw.specular * cel_step(0.25, local_spec_l);
 
     // Cool anime rim / fresnel. A strong street-level rim was filling the
     // canyon like noon; keep a hard plate edge, not a cyan wash.
     let ndotv = max(dot(n, v), 0.0);
-    let rim = pow(1.0 - ndotv, 2.6);
+    // Cel rim: a flat band on mechs/Angels only (kind 1); boxy façades would
+    // light whole grazing walls with a hard step.
+    let is_unit = step(0.5, input.kind) * (1.0 - step(1.5, input.kind));
+    let rim = mix(0.5 * pow(1.0 - ndotv, 2.6), 0.2 * cel_step(0.8, 1.0 - ndotv), is_unit);
     let street = smoothstep(5.0, 1.6, input.world_pos.y);
     // 1 in the battle street camera (~3m), ~0 from the surface overview (~18m).
     let cam_low = smoothstep(14.0, 5.0, frame_params.camera_pos.y);
@@ -314,7 +409,7 @@ fn raster_fs(input: VertexOutput) -> @location(0) vec4<f32> {
     let pane = smoothstep(half_u + 0.03, half_u - 0.01, pane_u)
         * smoothstep(half_v + 0.03, half_v - 0.01, pane_v);
     let lit = step(0.55, h) * facade * pane;
-    var window_col = mix(vec3<f32>(1.55, 0.82, 0.28), vec3<f32>(0.35, 0.95, 1.15), step(0.88, h2));
+    var window_col = mix(vec3<f32>(1.55, 0.82, 0.28), vec3<f32>(0.35, 0.95, 1.15), step(0.72, h2));
     window_col *= lit * (0.55 + 0.55 * h2);
 
     var color = ambient + light + local + emissive + rim_col + window_col;

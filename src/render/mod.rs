@@ -1439,6 +1439,29 @@ fn quat_identity() -> mint::Quaternion<f32> {
     }
 }
 
+/// G1 cel outline: a second, negatively scaled copy of the visual. The
+/// Tokyo-3 raster.wgsl overlay reads the mirrored model matrix as the
+/// inverted-hull flag: it un-mirrors the mesh, pushes it out along normals
+/// by ~3 px, keeps back faces only and paints them ink. Same object, so
+/// transform, tint and skeletal pose stay in lockstep with the base visual.
+/// Blade's forward pass has no post hook / sampled depth, hence no
+/// screen-space edge pass.
+fn with_outline(visual: blade_engine::config::Visual) -> Vec<blade_engine::config::Visual> {
+    let hull = blade_engine::config::Visual {
+        model: visual.model.clone(),
+        scale: -visual.scale,
+        pos: visual.pos,
+        rot: visual.rot,
+        front_face: blade_engine::config::FrontFace::default(),
+    };
+    vec![visual, hull]
+}
+
+/// Flat ground tiles stay un-inked so the street does not become a grid.
+fn wants_outline(model: &str) -> bool {
+    !(model.contains("/road-") || model.contains("/tile-"))
+}
+
 fn add_static(
     engine: &mut blade_engine::Engine,
     name: impl Into<String>,
@@ -1446,16 +1469,22 @@ fn add_static(
     pos: [f32; 3],
     scale: f32,
 ) -> blade_engine::ObjectHandle {
+    let visual = blade_engine::config::Visual {
+        model: model.into(),
+        scale,
+        pos: [0.0; 3].into(),
+        rot: [0.0; 3].into(),
+        front_face: blade_engine::config::FrontFace::default(),
+    };
+    let visuals = if wants_outline(model) {
+        with_outline(visual)
+    } else {
+        vec![visual]
+    };
     engine.add_object(
         &blade_engine::config::Object {
             name: name.into(),
-            visuals: vec![blade_engine::config::Visual {
-                model: model.into(),
-                scale,
-                pos: [0.0; 3].into(),
-                rot: [0.0; 3].into(),
-                front_face: blade_engine::config::FrontFace::default(),
-            }],
+            visuals,
             colliders: vec![],
             additional_mass: None,
         },
@@ -1800,13 +1829,13 @@ fn spawn_mech(engine: &mut blade_engine::Engine, mech: &Mech) -> MechVisual {
     let handle = engine.add_object(
         &blade_engine::config::Object {
             name: mech.name.clone(),
-            visuals: vec![blade_engine::config::Visual {
+            visuals: with_outline(blade_engine::config::Visual {
                 model: path.into(),
                 scale,
                 pos: [0.0; 3].into(),
                 rot: [0.0; 3].into(),
                 front_face: blade_engine::config::FrontFace::default(),
-            }],
+            }),
             colliders: vec![],
             additional_mass: None,
         },
@@ -2154,6 +2183,21 @@ mod tests {
         for tint in [player, splinter, mass] {
             assert!(tint[0].max(tint[1]).max(tint[2]) < 2.5);
         }
+    }
+
+    #[test]
+    fn cel_outline_skips_ground_tiles_only() {
+        assert!(!wants_outline("models/roads/road-straight.glb"));
+        assert!(!wants_outline("models/roads/tile-low.glb"));
+        assert!(wants_outline("models/city/building-skyscraper-a.glb"));
+        assert!(wants_outline("models/geofront/relay-beacon.glb"));
+        let v = with_outline(blade_engine::config::Visual {
+            model: "m.glb".into(),
+            scale: 0.4,
+            ..Default::default()
+        });
+        assert_eq!(v.len(), 2);
+        assert!(v[1].scale < 0.0 && (v[1].scale + v[0].scale).abs() < 1e-6);
     }
 
     #[test]
