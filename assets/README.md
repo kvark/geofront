@@ -39,3 +39,11 @@ models/
 ```
 
 Copy from the curated set in the project's `geofront-models/` / `geofront-push/assets/models/` if they are missing after a fresh clone.
+
+## Geofront Originals
+
+- `models/geofront/relay-beacon.glb`: an original low-profile street fixture
+  with a stepped graphite housing, luminous band silhouette, and four inlaid
+  signal strips. Uses two textureless materials and six-face hard normals.
+  Regenerate with `python3 scripts/generate-relay-beacon.py`. The same GLB
+  is embedded on WASM. No reference-game data or textures are used.
