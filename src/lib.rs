@@ -260,6 +260,7 @@ struct Game {
     keys: render::MoveInput,
     dragging: bool,
     last_cursor: Option<(f32, f32)>,
+    hud_width_points: f32,
     last_redraw: time::Instant,
     started_at: time::Instant,
     /// Exit after this many seconds (GEOFRONT_QUIT_AFTER / GEOFRONT_SCREENSHOT).
@@ -273,6 +274,21 @@ struct Game {
     autoplay_done: bool,
     /// H / F1 toggles the camera/debug help block on the NERV HUD.
     show_help: bool,
+}
+
+// Winit cursor coordinates are physical pixels, while the HUD is laid out in egui points.
+fn pointer_in_hud(x: f32, width_pixels: f32, hud_points: f32, pixels_per_point: f32) -> bool {
+    x >= (width_pixels - hud_points * pixels_per_point).max(0.0)
+}
+
+#[cfg(test)]
+#[test]
+fn pointer_routing_accounts_for_hud_scale() {
+    assert!(pointer_in_hud(500.0, 760.0, 360.0, 1.0));
+    assert!(!pointer_in_hud(399.0, 760.0, 360.0, 1.0));
+    assert!(pointer_in_hud(1000.0, 1520.0, 360.0, 2.0));
+    assert!(!pointer_in_hud(799.0, 1520.0, 360.0, 2.0));
+    assert!(pointer_in_hud(0.0, 300.0, 360.0, 1.0));
 }
 
 impl Drop for Game {
@@ -295,7 +311,7 @@ impl Game {
 
         #[cfg(target_arch = "wasm32")]
         {
-            use winit::dpi::PhysicalSize;
+            use winit::dpi::LogicalSize;
             use winit::platform::web::WindowExtWebSys as _;
             let canvas = window.canvas().expect("winit canvas");
             canvas.set_id(blade_graphics::CANVAS_ID);
@@ -310,11 +326,11 @@ impl Game {
                     .ok()
                     .and_then(|v| v.as_f64())
                     .unwrap_or(720.0) as u32;
-                let width = width.max(1);
-                let height = height.max(1);
-                canvas.set_width(width);
-                canvas.set_height(height);
-                let _ = window.request_inner_size(PhysicalSize::new(width, height));
+                let size =
+                    LogicalSize::new(width.max(1), height.max(1)).to_physical(window.scale_factor());
+                canvas.set_width(size.width);
+                canvas.set_height(size.height);
+                let _ = window.request_inner_size(size);
             }
             web_sys::window()
                 .and_then(|win| win.document())
@@ -420,6 +436,7 @@ impl Game {
             keys: render::MoveInput::default(),
             dragging: false,
             last_cursor: None,
+            hud_width_points: 360.0,
             last_redraw: time::Instant::now(),
             started_at: time::Instant::now(),
             quit_after,
@@ -466,25 +483,6 @@ impl Game {
             self.keys.q = down("KeyQ") || down("Space");
             self.keys.e = down("KeyE") || down("ControlLeft") || down("ControlRight");
             self.keys.shift = down("ShiftLeft") || down("ShiftRight");
-        }
-        if let Ok(ptr) = js_sys::Reflect::get(&window, &JsValue::from_str("__gfPtr")) {
-            let num = |name: &str| {
-                js_sys::Reflect::get(&ptr, &JsValue::from_str(name))
-                    .ok()
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0) as f32
-            };
-            let width = self.window.inner_size().width as f32;
-            let over_hud = num("x") > (width - 370.0).max(0.0);
-            if !over_hud {
-                self.keys.look_dx += num("dx");
-                self.keys.look_dy += num("dy");
-                self.keys.wheel += num("wheel");
-            }
-            let _ = js_sys::Reflect::set(&ptr, &JsValue::from_str("dx"), &JsValue::from_f64(0.0));
-            let _ = js_sys::Reflect::set(&ptr, &JsValue::from_str("dy"), &JsValue::from_f64(0.0));
-            let _ =
-                js_sys::Reflect::set(&ptr, &JsValue::from_str("wheel"), &JsValue::from_f64(0.0));
         }
         if let Ok(view) = js_sys::Reflect::get(&window, &JsValue::from_str("__gfView")) {
             if let Some(s) = view.as_string() {
@@ -537,6 +535,18 @@ impl Game {
         );
     }
 
+    fn cursor_over_hud(&self) -> bool {
+        let scale = egui_winit::pixels_per_point(self.egui_state.egui_ctx(), &self.window);
+        self.last_cursor.is_some_and(|(x, _)| {
+            pointer_in_hud(
+                x,
+                self.window.inner_size().width as f32,
+                self.hud_width_points,
+                scale,
+            )
+        })
+    }
+
     fn on_event(&mut self, event: &WindowEvent) -> Result<ControlFlow, QuitEvent> {
         match event {
             WindowEvent::KeyboardInput {
@@ -563,15 +573,8 @@ impl Game {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
-                let width = self.window.inner_size().width as f32;
-                let over_hud = self
-                    .last_cursor
-                    .map(|(x, _)| x > width - 370.0)
-                    .unwrap_or(false);
-                self.dragging = *state == winit::event::ElementState::Pressed && !over_hud;
-                if !self.dragging {
-                    self.last_cursor = None;
-                }
+                self.dragging =
+                    *state == winit::event::ElementState::Pressed && !self.cursor_over_hud();
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let pos = (position.x as f32, position.y as f32);
@@ -584,19 +587,39 @@ impl Game {
                 self.last_cursor = Some(pos);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let width = self.window.inner_size().width as f32;
-                let over_hud = self
-                    .last_cursor
-                    .map(|(x, _)| x > width - 370.0)
-                    .unwrap_or(false);
-                if !over_hud {
-                    self.keys.wheel += match delta {
+                if self.last_cursor.is_some() && !self.cursor_over_hud() {
+                    let wheel = match delta {
                         winit::event::MouseScrollDelta::LineDelta(_, y) => y * 24.0,
-                        winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
+                        winit::event::MouseScrollDelta::PixelDelta(p) => {
+                            if cfg!(target_arch = "wasm32") {
+                                p.y as f32 / self.window.scale_factor() as f32
+                            } else {
+                                p.y as f32
+                            }
+                        }
                     };
+                    // Web DOM and winit use opposite wheel signs. Retain the old DOM direction.
+                    self.keys.wheel += if cfg!(target_arch = "wasm32") { -wheel } else { wheel };
                 }
             }
+            #[cfg(target_arch = "wasm32")]
+            WindowEvent::Resized(size) if size.width != 0 && size.height != 0 => {
+                use winit::platform::web::WindowExtWebSys as _;
+                if let Some(canvas) = self.window.canvas() {
+                    if canvas.width() != size.width {
+                        canvas.set_width(size.width);
+                    }
+                    if canvas.height() != size.height {
+                        canvas.set_height(size.height);
+                    }
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.last_cursor = None;
+                self.dragging = false;
+            }
             WindowEvent::Focused(false) => {
+                self.last_cursor = None;
                 self.keys = render::MoveInput::default();
                 self.dragging = false;
             }
@@ -749,7 +772,7 @@ impl Game {
 
         let mut hud_action = None;
         let egui_output = egui_context.run_ui(raw_input, |egui_ctx| {
-            egui::SidePanel::right("hud")
+            let panel = egui::SidePanel::right("hud")
                 .exact_width(360.0)
                 .resizable(false)
                 .frame(
@@ -778,6 +801,8 @@ impl Game {
                         })
                         .inner;
                 });
+            self.hud_width_points =
+                (egui_ctx.viewport_rect().right() - panel.response.rect.left()).max(0.0);
         });
 
         if let Some(action) = hud_action {

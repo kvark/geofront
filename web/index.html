@@ -131,7 +131,6 @@
     <script>
       // Window-level input so the preview iframe actually receives WASD / drag.
       window.__gfKeys = Object.create(null);
-      window.__gfPtr = { dx: 0, dy: 0, wheel: 0, down: false, x: 0, y: 0 };
       window.__gfCam = { yaw: 0, pitch: 0, speed: 0, x: 0, y: 0, z: 0 };
       window.__gfView = "";
       window.__gfMode = "";
@@ -170,29 +169,10 @@
         if (c.dataset.gfBound) return;
         c.dataset.gfBound = "1";
         c.tabIndex = 0;
-        c.addEventListener("pointerdown", (e) => {
-          window.__gfPtr.down = true;
-          try { c.setPointerCapture(e.pointerId); } catch (_) {}
-          c.focus();
-          c.style.cursor = "grabbing";
-        });
-        const end = () => {
-          window.__gfPtr.down = false;
-          c.style.cursor = "grab";
-        };
-        c.addEventListener("pointerup", end);
-        c.addEventListener("pointercancel", end);
-        c.addEventListener("pointermove", (e) => {
-          window.__gfPtr.x = e.clientX;
-          window.__gfPtr.y = e.clientY;
-          if (!window.__gfPtr.down) return;
-          window.__gfPtr.dx += e.movementX;
-          window.__gfPtr.dy += e.movementY;
-        });
-        c.addEventListener("wheel", (e) => {
-          window.__gfPtr.wheel += e.deltaY;
-          e.preventDefault();
-        }, { passive: false });
+        // Winit handles camera input and canvas pointer capture. Avoid forwarding
+        // the same DOM motion or wheel event to the game a second time.
+        c.addEventListener("pointerdown", () => c.focus());
+        c.addEventListener("wheel", (e) => e.preventDefault(), { passive: false });
         c.addEventListener("contextmenu", (e) => e.preventDefault());
       }
       const obs = new MutationObserver(() => {
