@@ -83,6 +83,7 @@
         gap: 8px;
         pointer-events: none;
       }
+      #chrome[hidden] { display: none; }
       #chrome .row {
         display: flex;
         gap: 6px;
@@ -251,6 +252,17 @@
         });
       };
       try {
+        // Probe separately: the game creates and owns its rendering canvas.
+        const gl = document.createElement("canvas").getContext("webgl2");
+        if (!gl) {
+          throw new Error(
+            "Geofront could not create a WebGL2 graphics context.\n\n" +
+            "Try updating your browser and enabling graphics acceleration in its settings, then restart it. " +
+            "If you are using an embedded or remote browser, try opening the game in a regular browser on your device."
+          );
+        }
+        // Release the temporary context before the game allocates its own.
+        gl.getExtension("WEBGL_lose_context")?.loseContext();
         await init();
         if (hint) hint.textContent = "starting";
         start();
