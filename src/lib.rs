@@ -762,15 +762,21 @@ impl Game {
                         )),
                 )
                 .show(egui_ctx, |ui| {
-                    hud_action = ui::side_hud(
-                        ui,
-                        &self.mission,
-                        self.view_mode,
-                        &mut self.selected_player,
-                        &mut self.selected_enemy,
-                        &mut self.selected_limb,
-                        &mut self.show_help,
-                    );
+                    // Pilot alerts and help can push combat orders below a short viewport.
+                    hud_action = egui::ScrollArea::vertical()
+                        .id_salt("tactical-hud")
+                        .show(ui, |ui| {
+                            ui::side_hud(
+                                ui,
+                                &self.mission,
+                                self.view_mode,
+                                &mut self.selected_player,
+                                &mut self.selected_enemy,
+                                &mut self.selected_limb,
+                                &mut self.show_help,
+                            )
+                        })
+                        .inner;
                 });
         });
 
